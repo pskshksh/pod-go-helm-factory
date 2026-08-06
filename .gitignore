@@ -1,0 +1,14 @@
+# Generated Helm charts (build artifacts — source of truth is the Go descriptors)
+/dist/
+
+# Go build output
+/bin/
+
+# Editors
+/.idea/
+/.vscode/
+
+# Local env / secrets — never commit
+*.env
+kubeconfig
+*.kubeconfig
