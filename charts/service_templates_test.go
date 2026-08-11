@@ -75,6 +75,59 @@ func TestWriteEnvFrom(t *testing.T) {
 	})
 }
 
+// TestWriteCommandArgs confirms command and args render as quoted-when-needed
+// lists, and that empty slices emit nothing.
+func TestWriteCommandArgs(t *testing.T) {
+	t.Run("empty", func(t *testing.T) {
+		var y render.YAML
+		Service{}.writeCommand(&y, 0)
+		Service{}.writeArgs(&y, 0)
+		assertRender(t, y.String(), "")
+	})
+
+	t.Run("command_and_args", func(t *testing.T) {
+		svc := Service{Container: Container{
+			Command: []string{"/bin/sh", "-c"},
+			Args:    []string{"--port=8080", "--verbose"},
+		}}
+		var y render.YAML
+		svc.writeCommand(&y, 0)
+		svc.writeArgs(&y, 0)
+		assertFragment(t, y.String(), "command_args.yaml")
+	})
+}
+
+// TestWriteVolumes confirms the container mounts and pod volumes: the /tmp
+// scratch dir (read-only root) plus custom Secret-backed and emptyDir volumes.
+func TestWriteVolumes(t *testing.T) {
+	svc := Service{Container: Container{Volumes: []Volume{
+		{Name: "config", MountPath: "/etc/config", Secret: "app-config", ReadOnly: true},
+		{Name: "cache", MountPath: "/var/cache"},
+	}}}
+
+	t.Run("mounts", func(t *testing.T) {
+		var y render.YAML
+		svc.writeVolumeMounts(&y, 0)
+		assertFragment(t, y.String(), "volumemounts.yaml")
+	})
+
+	t.Run("volumes", func(t *testing.T) {
+		var y render.YAML
+		svc.writeVolumes(&y, 0)
+		assertFragment(t, y.String(), "volumes.yaml")
+	})
+
+	t.Run("writable_root_no_tmp", func(t *testing.T) {
+		writable := Service{
+			WritableRootFilesystem: true,
+			Container:              Container{Volumes: []Volume{{Name: "cache", MountPath: "/var/cache"}}},
+		}
+		var y render.YAML
+		writable.writeVolumes(&y, 0)
+		assertFragment(t, y.String(), "volumes_writable_root.yaml")
+	})
+}
+
 // TestNetworkPolicyYAML pins the default-deny variant (no ingress block, DNS-only
 // egress); the same-namespace variant is covered by the blocks snapshot.
 func TestNetworkPolicyYAML(t *testing.T) {

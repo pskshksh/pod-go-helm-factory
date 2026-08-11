@@ -184,6 +184,10 @@ const (
 	KEY_EMPTY_DIR          = "emptyDir"
 
 	// Container.
+	KEY_COMMAND         = "command"
+	KEY_ARGS            = "args"
+	KEY_SECRET          = "secret"
+	KEY_READ_ONLY       = "readOnly"
 	KEY_ENV             = "env"
 	KEY_VALUE           = "value"
 	KEY_ENV_FROM        = "envFrom"
@@ -491,6 +495,79 @@ func (s Service) writeContainerSecurityContext(y *render.YAML, indent int) {
 	y.Field(indent+2, KEY_TYPE, SECCOMP_RUNTIME_DEFAULT)
 }
 
+// writeCommand emits the container command (ENTRYPOINT override). Nothing is
+// written when it is empty.
+func (s Service) writeCommand(y *render.YAML, indent int) {
+	if len(s.Container.Command) == 0 {
+		return
+	}
+	y.Line(indent, KEY_COMMAND+":")
+	for _, c := range s.Container.Command {
+		y.Item(indent+1, c)
+	}
+}
+
+// writeArgs emits the container args (CMD override). Nothing is written when it
+// is empty.
+func (s Service) writeArgs(y *render.YAML, indent int) {
+	if len(s.Container.Args) == 0 {
+		return
+	}
+	y.Line(indent, KEY_ARGS+":")
+	for _, a := range s.Container.Args {
+		y.Item(indent+1, a)
+	}
+}
+
+// writeVolumeMounts emits the container's volumeMounts: the writable /tmp scratch
+// dir (present whenever the root filesystem is read-only) followed by any custom
+// mounts. Nothing is written when neither applies.
+func (s Service) writeVolumeMounts(y *render.YAML, indent int) {
+	readOnlyRoot := s.readOnlyRootFilesystem()
+	if !readOnlyRoot && len(s.Container.Volumes) == 0 {
+		return
+	}
+
+	y.Line(indent, KEY_VOLUME_MOUNTS+":")
+	if readOnlyRoot {
+		y.Line(indent+1, "- "+KEY_NAME+": "+TMP_VOLUME_NAME)
+		y.Field(indent+2, KEY_MOUNT_PATH, TMP_MOUNT_PATH)
+	}
+	for _, v := range s.Container.Volumes {
+		y.Line(indent+1, "- "+KEY_NAME+": "+v.Name)
+		y.Field(indent+2, KEY_MOUNT_PATH, v.MountPath)
+		if v.ReadOnly {
+			y.Bool(indent+2, KEY_READ_ONLY, true)
+		}
+	}
+}
+
+// writeVolumes emits the pod's volumes matching writeVolumeMounts: the /tmp
+// emptyDir (when the root filesystem is read-only) and any custom volumes, each
+// a Secret when Volume.Secret is set, otherwise an emptyDir. Nothing is written
+// when neither applies.
+func (s Service) writeVolumes(y *render.YAML, indent int) {
+	readOnlyRoot := s.readOnlyRootFilesystem()
+	if !readOnlyRoot && len(s.Container.Volumes) == 0 {
+		return
+	}
+
+	y.Line(indent, KEY_VOLUMES+":")
+	if readOnlyRoot {
+		y.Line(indent+1, "- "+KEY_NAME+": "+TMP_VOLUME_NAME)
+		y.Line(indent+2, KEY_EMPTY_DIR+": {}")
+	}
+	for _, v := range s.Container.Volumes {
+		y.Line(indent+1, "- "+KEY_NAME+": "+v.Name)
+		if v.Secret != "" {
+			y.Line(indent+2, KEY_SECRET+":")
+			y.Field(indent+3, KEY_SECRET_NAME, v.Secret)
+		} else {
+			y.Line(indent+2, KEY_EMPTY_DIR+": {}")
+		}
+	}
+}
+
 // writeEnv emits the container's literal environment variables into y, sorted by
 // key for deterministic output. Nothing is written when there are none.
 func (s Service) writeEnv(y *render.YAML, indent int) {
@@ -573,6 +650,8 @@ func (s Service) deploymentYAML() string {
 	y.Line(4, "- "+KEY_NAME+": "+s.Name)
 	y.Line(5, KEY_IMAGE+`: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"`)
 	y.Line(5, KEY_IMAGE_PULL_POLICY+": {{ .Values.image.pullPolicy }}")
+	s.writeCommand(&y, 5)
+	s.writeArgs(&y, 5)
 	s.writeEnv(&y, 5)
 	s.writeEnvFrom(&y, 5)
 	y.Line(5, KEY_PORTS+":")
@@ -590,19 +669,9 @@ func (s Service) deploymentYAML() string {
 	y.Line(5, KEY_RESOURCES+":")
 	y.Line(6, "{{- toYaml .Values."+KEY_RESOURCES+" | nindent 12 }}")
 	s.writeContainerSecurityContext(&y, 5)
+	s.writeVolumeMounts(&y, 5)
 
-	// A read-only root filesystem needs a writable scratch dir for /tmp.
-	if s.readOnlyRootFilesystem() {
-		y.Line(5, KEY_VOLUME_MOUNTS+":")
-		y.Line(6, "- "+KEY_NAME+": "+TMP_VOLUME_NAME)
-		y.Field(7, KEY_MOUNT_PATH, TMP_MOUNT_PATH)
-	}
-
-	if s.readOnlyRootFilesystem() {
-		y.Line(3, KEY_VOLUMES+":")
-		y.Line(4, "- "+KEY_NAME+": "+TMP_VOLUME_NAME)
-		y.Line(5, KEY_EMPTY_DIR+": {}")
-	}
+	s.writeVolumes(&y, 3)
 
 	writeValuesBlock(&y, 3, KEY_NODE_SELECTOR, KEY_NODE_SELECTOR)
 	writeValuesBlock(&y, 3, KEY_AFFINITY, KEY_AFFINITY)

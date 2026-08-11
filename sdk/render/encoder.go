@@ -12,6 +12,9 @@ type Encoder interface {
 	// Bool writes a boolean "key: value" unquoted (true/false). YAML booleans
 	// must never be rendered as strings, so this bypasses the scalar-quoting path.
 	Bool(indent int, key string, value bool)
+	// Item writes a sequence element "- value", quoting value when a plain
+	// scalar would be misparsed.
+	Item(indent int, value string)
 	// Line writes s verbatim at the given depth — for content the encoder must
 	// not touch, e.g. Helm {{ }} templating passed straight through to Helm.
 	Line(indent int, s string)

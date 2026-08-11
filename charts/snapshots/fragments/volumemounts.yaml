@@ -1,0 +1,8 @@
+volumeMounts:
+  - name: tmp
+    mountPath: /tmp
+  - name: config
+    mountPath: /etc/config
+    readOnly: true
+  - name: cache
+    mountPath: /var/cache
