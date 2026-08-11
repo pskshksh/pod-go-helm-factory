@@ -24,6 +24,19 @@ const (
 	// descriptor later overrides it. Zero would be root, so this must be non-zero.
 	DEFAULT_RUN_AS_UID = 10001
 
+	// Container/probe defaults.
+	DEFAULT_PORT           = 8080
+	DEFAULT_LIVENESS_PATH  = "/healthz"
+	DEFAULT_READINESS_PATH = "/readyz"
+
+	// Service default. The ClusterIP Service listens here and targets the
+	// container's named "http" port, so this can differ from the container port.
+	DEFAULT_SERVICE_PORT = 80
+
+	// Deployment rollout strategies.
+	STRATEGY_ROLLING  = "RollingUpdate"
+	STRATEGY_RECREATE = "Recreate"
+
 	// _helpers.tpl substitution placeholders
 	PLACEHOLDER_NAME     = "NAME"
 	PLACEHOLDER_SELECTOR = "SELECTOR"
@@ -101,6 +114,39 @@ func (s Service) automountSAToken() bool {
 // descriptor field will override it once images need a specific user.
 func (s Service) runAsUser() int {
 	return DEFAULT_RUN_AS_UID
+}
+
+// containerPort is the port the container listens on (default DEFAULT_PORT).
+func (s Service) containerPort() int {
+	if s.Container.Port > 0 {
+		return s.Container.Port
+	}
+	return DEFAULT_PORT
+}
+
+// livenessPath is the HTTP liveness probe path (default DEFAULT_LIVENESS_PATH).
+func (s Service) livenessPath() string {
+	if s.Container.LivenessPath != "" {
+		return s.Container.LivenessPath
+	}
+	return DEFAULT_LIVENESS_PATH
+}
+
+// readinessPath is the HTTP readiness probe path (default DEFAULT_READINESS_PATH).
+func (s Service) readinessPath() string {
+	if s.Container.ReadinessPath != "" {
+		return s.Container.ReadinessPath
+	}
+	return DEFAULT_READINESS_PATH
+}
+
+// strategyType selects the Deployment update strategy. The default is a rolling
+// update; RecreateDuringRollout switches to Recreate (tear down old pods first).
+func (s Service) strategyType() string {
+	if s.RecreateDuringRollout {
+		return STRATEGY_RECREATE
+	}
+	return STRATEGY_ROLLING
 }
 
 // chartYAML renders Chart.yaml.
@@ -196,4 +242,140 @@ func (s Service) writeContainerSecurityContext(y *render.YAML, indent int) {
 	y.Line(indent+2, "- ALL")
 	y.Line(indent+1, "seccompProfile:")
 	y.Field(indent+2, "type", "RuntimeDefault")
+}
+
+// deploymentYAML renders templates/deployment.yaml. The manifest structure,
+// labels, and securityContext are baked here; per-environment scalars
+// (replicas, image, resources, scheduling) stay as .Values references Helm
+// fills in at install time. Only the zero-value Kind (Deployment) is emitted
+// today; other workload kinds come in a later step.
+func (s Service) deploymentYAML() string {
+	name := s.Name
+	var y render.YAML
+
+	y.Field(0, "apiVersion", "apps/v1")
+	y.Field(0, "kind", "Deployment")
+	y.Line(0, "metadata:")
+	y.Line(1, `name: {{ include "`+name+`.fullname" . }}`)
+	y.Line(1, "labels:")
+	y.Line(2, `{{- include "`+name+`.labels" . | nindent 4 }}`)
+
+	y.Line(0, "spec:")
+	y.Line(1, "replicas: {{ .Values.replicaCount }}")
+	y.Line(1, "strategy:")
+	y.Field(2, "type", s.strategyType())
+	y.Line(1, "selector:")
+	y.Line(2, "matchLabels:")
+	y.Line(3, `{{- include "`+name+`.selectorLabels" . | nindent 6 }}`)
+
+	y.Line(1, "template:")
+	y.Line(2, "metadata:")
+	y.Line(3, "labels:")
+	y.Line(4, `{{- include "`+name+`.selectorLabels" . | nindent 8 }}`)
+	y.Line(3, "{{- with .Values.podAnnotations }}")
+	y.Line(3, "annotations:")
+	y.Line(4, "{{- toYaml . | nindent 8 }}")
+	y.Line(3, "{{- end }}")
+
+	y.Line(2, "spec:")
+	y.Line(3, `serviceAccountName: {{ include "`+name+`.fullname" . }}`)
+	y.Bool(3, "automountServiceAccountToken", s.automountSAToken())
+	y.Line(3, "{{- with .Values.imagePullSecrets }}")
+	y.Line(3, "imagePullSecrets:")
+	y.Line(4, "{{- toYaml . | nindent 8 }}")
+	y.Line(3, "{{- end }}")
+	s.writePodSecurityContext(&y, 3)
+
+	y.Line(3, "containers:")
+	y.Line(4, "- name: "+name)
+	y.Line(5, `image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"`)
+	y.Line(5, "imagePullPolicy: {{ .Values.image.pullPolicy }}")
+	y.Line(5, "ports:")
+	y.Line(6, "- name: http")
+	y.Line(7, "containerPort: "+strconv.Itoa(s.containerPort()))
+	y.Field(7, "protocol", "TCP")
+	y.Line(5, "livenessProbe:")
+	y.Line(6, "httpGet:")
+	y.Field(7, "path", s.livenessPath())
+	y.Field(7, "port", "http")
+	y.Line(5, "readinessProbe:")
+	y.Line(6, "httpGet:")
+	y.Field(7, "path", s.readinessPath())
+	y.Field(7, "port", "http")
+	y.Line(5, "resources:")
+	y.Line(6, "{{- toYaml .Values.resources | nindent 12 }}")
+	s.writeContainerSecurityContext(&y, 5)
+
+	// A read-only root filesystem needs a writable scratch dir for /tmp.
+	if s.readOnlyRootFilesystem() {
+		y.Line(5, "volumeMounts:")
+		y.Line(6, "- name: tmp")
+		y.Field(7, "mountPath", "/tmp")
+	}
+
+	if s.readOnlyRootFilesystem() {
+		y.Line(3, "volumes:")
+		y.Line(4, "- name: tmp")
+		y.Line(5, "emptyDir: {}")
+	}
+
+	y.Line(3, "{{- with .Values.nodeSelector }}")
+	y.Line(3, "nodeSelector:")
+	y.Line(4, "{{- toYaml . | nindent 8 }}")
+	y.Line(3, "{{- end }}")
+	y.Line(3, "{{- with .Values.affinity }}")
+	y.Line(3, "affinity:")
+	y.Line(4, "{{- toYaml . | nindent 8 }}")
+	y.Line(3, "{{- end }}")
+	y.Line(3, "{{- with .Values.tolerations }}")
+	y.Line(3, "tolerations:")
+	y.Line(4, "{{- toYaml . | nindent 8 }}")
+	y.Line(3, "{{- end }}")
+
+	return y.String()
+}
+
+// serviceYAML renders templates/service.yaml: a ClusterIP Service fronting the
+// workload. It exposes DEFAULT_SERVICE_PORT and targets the container's named
+// "http" port, so the Service tracks the container port without duplicating the
+// number. The selector reuses the shared selectorLabels helper.
+func (s Service) serviceYAML() string {
+	name := s.Name
+	var y render.YAML
+
+	y.Field(0, "apiVersion", "v1")
+	y.Field(0, "kind", "Service")
+	y.Line(0, "metadata:")
+	y.Line(1, `name: {{ include "`+name+`.fullname" . }}`)
+	y.Line(1, "labels:")
+	y.Line(2, `{{- include "`+name+`.labels" . | nindent 4 }}`)
+
+	y.Line(0, "spec:")
+	y.Field(1, "type", "ClusterIP")
+	y.Line(1, "ports:")
+	y.Line(2, "- name: http")
+	y.Line(3, "port: "+strconv.Itoa(DEFAULT_SERVICE_PORT))
+	y.Field(3, "targetPort", "http")
+	y.Field(3, "protocol", "TCP")
+	y.Line(1, "selector:")
+	y.Line(2, `{{- include "`+name+`.selectorLabels" . | nindent 4 }}`)
+
+	return y.String()
+}
+
+// serviceaccountYAML renders templates/serviceaccount.yaml. The token is not
+// automounted by default (MountServiceAccountToken opts in).
+func (s Service) serviceaccountYAML() string {
+	name := s.Name
+	var y render.YAML
+
+	y.Field(0, "apiVersion", "v1")
+	y.Field(0, "kind", "ServiceAccount")
+	y.Line(0, "metadata:")
+	y.Line(1, `name: {{ include "`+name+`.fullname" . }}`)
+	y.Line(1, "labels:")
+	y.Line(2, `{{- include "`+name+`.labels" . | nindent 4 }}`)
+	y.Bool(0, "automountServiceAccountToken", s.automountSAToken())
+
+	return y.String()
 }

@@ -8,9 +8,12 @@ import (
 type O = map[string]string
 
 const (
-	FILE_CHART_YAML  = "Chart.yaml"
-	FILE_VALUES_YAML = "values.yaml"
-	FILE_HELPERS_TPL = "templates/_helpers.tpl"
+	FILE_CHART_YAML     = "Chart.yaml"
+	FILE_VALUES_YAML    = "values.yaml"
+	FILE_HELPERS_TPL    = "templates/_helpers.tpl"
+	FILE_DEPLOYMENT     = "templates/deployment.yaml"
+	FILE_SERVICE        = "templates/service.yaml"
+	FILE_SERVICEACCOUNT = "templates/serviceaccount.yaml"
 )
 
 // Workload selects the Kubernetes controller a Service chart generates.
@@ -111,6 +114,21 @@ func (s Service) Generate(ctx context.Context, dir, version string) (string, err
 	}
 
 	err = writeFile(chartDir, FILE_HELPERS_TPL, s.helpersTPL())
+	if err != nil {
+		return "", err
+	}
+
+	err = writeFile(chartDir, FILE_DEPLOYMENT, s.deploymentYAML())
+	if err != nil {
+		return "", err
+	}
+
+	err = writeFile(chartDir, FILE_SERVICE, s.serviceYAML())
+	if err != nil {
+		return "", err
+	}
+
+	err = writeFile(chartDir, FILE_SERVICEACCOUNT, s.serviceaccountYAML())
 	if err != nil {
 		return "", err
 	}
