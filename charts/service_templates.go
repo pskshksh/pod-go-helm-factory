@@ -82,14 +82,16 @@ const (
 	API_APPS_V1 = "apps/v1"
 	API_CORE_V1 = "v1"
 
-	API_NETWORKING_V1 = "networking.k8s.io/v1"
-	API_POLICY_V1     = "policy/v1"
+	API_NETWORKING_V1  = "networking.k8s.io/v1"
+	API_POLICY_V1      = "policy/v1"
+	API_AUTOSCALING_V2 = "autoscaling/v2"
 
 	KIND_DEPLOYMENT     = "Deployment"
 	KIND_SERVICE        = "Service"
 	KIND_SERVICEACCOUNT = "ServiceAccount"
 	KIND_NETWORKPOLICY  = "NetworkPolicy"
 	KIND_PDB            = "PodDisruptionBudget"
+	KIND_HPA            = "HorizontalPodAutoscaler"
 )
 
 // Repeated manifest literal values.
@@ -110,6 +112,14 @@ const (
 
 	// PodDisruptionBudget default: keep at least one pod during disruptions.
 	DEFAULT_MIN_AVAILABLE = "1"
+
+	// HorizontalPodAutoscaler.
+	METRIC_TYPE_RESOURCE    = "Resource"
+	HPA_TARGET_UTILIZATION  = "Utilization"
+	RESOURCE_CPU            = "cpu"
+	RESOURCE_MEMORY         = "memory"
+	DEFAULT_MIN_REPLICAS    = 1
+	DEFAULT_CPU_UTILIZATION = 80
 )
 
 // YAML keys. Named so a key is written once and reused everywhere it appears,
@@ -188,6 +198,15 @@ const (
 	// PodDisruptionBudget.
 	KEY_MIN_AVAILABLE   = "minAvailable"
 	KEY_MAX_UNAVAILABLE = "maxUnavailable"
+
+	// HorizontalPodAutoscaler.
+	KEY_SCALE_TARGET_REF    = "scaleTargetRef"
+	KEY_MIN_REPLICAS        = "minReplicas"
+	KEY_MAX_REPLICAS        = "maxReplicas"
+	KEY_METRICS             = "metrics"
+	KEY_RESOURCE            = "resource"
+	KEY_TARGET              = "target"
+	KEY_AVERAGE_UTILIZATION = "averageUtilization"
 
 	// securityContext.
 	KEY_SECURITY_CONTEXT      = "securityContext"
@@ -274,6 +293,23 @@ func (s Service) strategyType() string {
 		return STRATEGY_RECREATE
 	}
 	return STRATEGY_ROLLING
+}
+
+// minReplicas is the HPA lower bound, defaulting to DEFAULT_MIN_REPLICAS.
+func (a Autoscale) minReplicas() int {
+	if a.MinReplicas > 0 {
+		return a.MinReplicas
+	}
+	return DEFAULT_MIN_REPLICAS
+}
+
+// cpuTarget is the HPA target CPU utilization %, defaulting to
+// DEFAULT_CPU_UTILIZATION.
+func (a Autoscale) cpuTarget() int {
+	if a.TargetCPUUtilization > 0 {
+		return a.TargetCPUUtilization
+	}
+	return DEFAULT_CPU_UTILIZATION
 }
 
 // includeFullname returns the Helm include expression for the chart's fullname.
@@ -454,7 +490,11 @@ func (s Service) deploymentYAML() string {
 	y.Line(2, s.includeLabels(4))
 
 	y.Line(0, KEY_SPEC+":")
-	y.Line(1, KEY_REPLICAS+": {{ .Values.replicaCount }}")
+	// With an HPA the autoscaler owns the replica count, so a static replicas
+	// here would be reset on every upgrade — omit it.
+	if s.Autoscale == nil {
+		y.Line(1, KEY_REPLICAS+": {{ .Values.replicaCount }}")
+	}
 	y.Line(1, KEY_STRATEGY+":")
 	y.Field(2, KEY_TYPE, s.strategyType())
 	y.Line(1, KEY_SELECTOR+":")
@@ -637,6 +677,49 @@ func (s Service) podDisruptionBudgetYAML() string {
 	y.Line(1, KEY_SELECTOR+":")
 	y.Line(2, KEY_MATCH_LABELS+":")
 	y.Line(3, s.includeSelectorLabels(6))
+
+	return y.String()
+}
+
+// writeResourceMetric emits one autoscaling/v2 Resource metric (cpu or memory)
+// targeting an average utilization percentage.
+func writeResourceMetric(y *render.YAML, indent int, resource string, target int) {
+	y.Line(indent, "- "+KEY_TYPE+": "+METRIC_TYPE_RESOURCE)
+	y.Line(indent+1, KEY_RESOURCE+":")
+	y.Field(indent+2, KEY_NAME, resource)
+	y.Line(indent+2, KEY_TARGET+":")
+	y.Field(indent+3, KEY_TYPE, HPA_TARGET_UTILIZATION)
+	y.Line(indent+3, KEY_AVERAGE_UTILIZATION+": "+strconv.Itoa(target))
+}
+
+// autoscaleYAML renders templates/hpa.yaml: a HorizontalPodAutoscaler targeting
+// this chart's Deployment. It always emits a CPU metric and adds a memory metric
+// when TargetMemoryUtilization is set. Only called when s.Autoscale is non-nil
+// (and validated).
+func (s Service) autoscaleYAML() string {
+	a := s.Autoscale
+	fullname := s.includeFullname()
+	var y render.YAML
+
+	y.Field(0, KEY_API_VERSION, API_AUTOSCALING_V2)
+	y.Field(0, KEY_KIND, KIND_HPA)
+	y.Line(0, KEY_METADATA+":")
+	y.Line(1, KEY_NAME+": "+fullname)
+	y.Line(1, KEY_LABELS+":")
+	y.Line(2, s.includeLabels(4))
+
+	y.Line(0, KEY_SPEC+":")
+	y.Line(1, KEY_SCALE_TARGET_REF+":")
+	y.Field(2, KEY_API_VERSION, API_APPS_V1)
+	y.Field(2, KEY_KIND, KIND_DEPLOYMENT)
+	y.Line(2, KEY_NAME+": "+fullname)
+	y.Line(1, KEY_MIN_REPLICAS+": "+strconv.Itoa(a.minReplicas()))
+	y.Line(1, KEY_MAX_REPLICAS+": "+strconv.Itoa(a.MaxReplicas))
+	y.Line(1, KEY_METRICS+":")
+	writeResourceMetric(&y, 2, RESOURCE_CPU, a.cpuTarget())
+	if a.TargetMemoryUtilization > 0 {
+		writeResourceMetric(&y, 2, RESOURCE_MEMORY, a.TargetMemoryUtilization)
+	}
 
 	return y.String()
 }

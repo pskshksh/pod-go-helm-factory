@@ -16,6 +16,7 @@ const (
 	FILE_SERVICEACCOUNT = "templates/serviceaccount.yaml"
 	FILE_NETWORKPOLICY  = "templates/networkpolicy.yaml"
 	FILE_PDB            = "templates/poddisruptionbudget.yaml"
+	FILE_HPA            = "templates/hpa.yaml"
 )
 
 // Workload selects the Kubernetes controller a Service chart generates.
@@ -88,8 +89,12 @@ type Service struct {
 	// PodDisruptionBudget, when non-nil, generates a PDB (nil = no PDB).
 	PodDisruptionBudget *PodDisruptionBudget
 
-	// More blocks come in later steps: Ingress, Autoscale, ServiceMonitor, and
-	// an Extra escape hatch. The struct will grow — that's expected.
+	// Autoscale, when non-nil, generates a HorizontalPodAutoscaler and drops the
+	// Deployment's static replica count so the HPA owns it (nil = no HPA).
+	Autoscale *Autoscale
+
+	// More blocks come in later steps: Ingress, ServiceMonitor, and an Extra
+	// escape hatch. The struct will grow — that's expected.
 }
 
 // NetworkPolicy is an opt-in default-deny NetworkPolicy for the workload. When
@@ -120,6 +125,28 @@ func (p PodDisruptionBudget) validate() error {
 	return nil
 }
 
+// Autoscale is an opt-in HorizontalPodAutoscaler. MaxReplicas is required;
+// MinReplicas defaults to 1 and TargetCPUUtilization to 80%. Set
+// TargetMemoryUtilization to add a memory metric. When present, the Deployment
+// omits its static replica count so the HPA is the sole owner of scale.
+type Autoscale struct {
+	MinReplicas             int
+	MaxReplicas             int
+	TargetCPUUtilization    int // percentage; default 80
+	TargetMemoryUtilization int // percentage; 0 = no memory metric
+}
+
+// validate ensures the replica bounds form a usable range.
+func (a Autoscale) validate() error {
+	if a.MaxReplicas <= 0 {
+		return fmt.Errorf("charts: autoscale: MaxReplicas must be greater than 0")
+	}
+	if a.MinReplicas > a.MaxReplicas {
+		return fmt.Errorf("charts: autoscale: MinReplicas (%d) exceeds MaxReplicas (%d)", a.MinReplicas, a.MaxReplicas)
+	}
+	return nil
+}
+
 func (s Service) ChartName() string {
 	return s.Name
 }
@@ -135,6 +162,12 @@ func (s Service) Generate(ctx context.Context, dir, version string) (string, err
 	}
 	if s.PodDisruptionBudget != nil {
 		err = s.PodDisruptionBudget.validate()
+		if err != nil {
+			return "", err
+		}
+	}
+	if s.Autoscale != nil {
+		err = s.Autoscale.validate()
 		if err != nil {
 			return "", err
 		}
@@ -184,6 +217,13 @@ func (s Service) Generate(ctx context.Context, dir, version string) (string, err
 
 	if s.PodDisruptionBudget != nil {
 		err = writeFile(chartDir, FILE_PDB, s.podDisruptionBudgetYAML())
+		if err != nil {
+			return "", err
+		}
+	}
+
+	if s.Autoscale != nil {
+		err = writeFile(chartDir, FILE_HPA, s.autoscaleYAML())
 		if err != nil {
 			return "", err
 		}

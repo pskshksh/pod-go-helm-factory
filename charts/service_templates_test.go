@@ -216,6 +216,75 @@ func TestPodDisruptionBudgetValidate(t *testing.T) {
 	}
 }
 
+// TestAutoscaleYAML pins the HPA: defaults (min 1, cpu 80, no memory metric) and
+// the memory-metric variant.
+func TestAutoscaleYAML(t *testing.T) {
+	head := `apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "api.fullname" . }}
+  labels:
+    {{- include "api.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "api.fullname" . }}
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 80
+`
+	memoryMetric := `    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 75
+`
+	cases := []struct {
+		id   string
+		auto Autoscale
+		want string
+	}{
+		{"cpu_defaults", Autoscale{MaxReplicas: 10}, head},
+		{"cpu_and_memory", Autoscale{MaxReplicas: 10, TargetMemoryUtilization: 75}, head + memoryMetric},
+	}
+
+	for _, c := range cases {
+		t.Run(c.id, func(t *testing.T) {
+			svc := Service{Name: "api", Autoscale: &c.auto}
+			assertRender(t, svc.autoscaleYAML(), c.want)
+		})
+	}
+}
+
+// TestAutoscaleValidate rejects a missing MaxReplicas and an inverted range.
+func TestAutoscaleValidate(t *testing.T) {
+	cases := []struct {
+		id   string
+		auto Autoscale
+	}{
+		{"max_missing", Autoscale{}},
+		{"min_exceeds_max", Autoscale{MinReplicas: 5, MaxReplicas: 3}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.id, func(t *testing.T) {
+			svc := Service{Name: "api", Autoscale: &c.auto}
+			_, err := svc.Generate(context.Background(), t.TempDir(), "0.1.0")
+			if err == nil {
+				t.Fatal("expected a validation error")
+			}
+		})
+	}
+}
+
 // TestSecurityAccessors confirms the zero value is hardened and each field
 // relaxes only its own control.
 func TestSecurityAccessors(t *testing.T) {

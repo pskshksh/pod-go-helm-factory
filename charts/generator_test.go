@@ -65,6 +65,7 @@ func TestGenerateSnapshots(t *testing.T) {
 				Description:         "Demo API service",
 				NetworkPolicy:       &NetworkPolicy{AllowSameNamespace: true},
 				PodDisruptionBudget: &PodDisruptionBudget{},
+				Autoscale:           &Autoscale{MaxReplicas: 10, TargetMemoryUtilization: 75},
 			},
 		},
 	}
