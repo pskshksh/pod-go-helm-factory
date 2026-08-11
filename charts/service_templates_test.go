@@ -1,6 +1,7 @@
 package charts
 
 import (
+	"context"
 	"testing"
 
 	"github.com/pskshksh/pod-go-helm-factory/sdk/render"
@@ -136,6 +137,82 @@ func TestWriteEnvFrom(t *testing.T) {
 			c.svc.writeEnvFrom(&y, 0)
 			assertRender(t, y.String(), c.want)
 		})
+	}
+}
+
+// TestNetworkPolicyYAML pins the default-deny variant: policyTypes cover both
+// directions, there is no ingress block (deny-all), and egress allows only DNS.
+func TestNetworkPolicyYAML(t *testing.T) {
+	svc := Service{Name: "api", NetworkPolicy: &NetworkPolicy{}}
+	want := `apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "api.fullname" . }}
+  labels:
+    {{- include "api.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "api.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+`
+	assertRender(t, svc.networkPolicyYAML(), want)
+}
+
+// TestPodDisruptionBudgetYAML pins which single bound is emitted: default
+// (minAvailable 1), an explicit percentage, and maxUnavailable.
+func TestPodDisruptionBudgetYAML(t *testing.T) {
+	head := `apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "api.fullname" . }}
+  labels:
+    {{- include "api.labels" . | nindent 4 }}
+spec:
+`
+	tail := `  selector:
+    matchLabels:
+      {{- include "api.selectorLabels" . | nindent 6 }}
+`
+	cases := []struct {
+		id    string
+		pdb   PodDisruptionBudget
+		bound string
+	}{
+		{"default_min_available", PodDisruptionBudget{}, "  minAvailable: 1\n"},
+		{"percentage", PodDisruptionBudget{MinAvailable: "50%"}, "  minAvailable: 50%\n"},
+		{"max_unavailable", PodDisruptionBudget{MaxUnavailable: "1"}, "  maxUnavailable: 1\n"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.id, func(t *testing.T) {
+			svc := Service{Name: "api", PodDisruptionBudget: &c.pdb}
+			assertRender(t, svc.podDisruptionBudgetYAML(), head+c.bound+tail)
+		})
+	}
+}
+
+// TestPodDisruptionBudgetValidate rejects setting both bounds (forbidden by the
+// Kubernetes API) via Generate.
+func TestPodDisruptionBudgetValidate(t *testing.T) {
+	svc := Service{
+		Name:                "api",
+		PodDisruptionBudget: &PodDisruptionBudget{MinAvailable: "1", MaxUnavailable: "1"},
+	}
+
+	_, err := svc.Generate(context.Background(), t.TempDir(), "0.1.0")
+	if err == nil {
+		t.Fatal("expected an error when both MinAvailable and MaxUnavailable are set")
 	}
 }
 

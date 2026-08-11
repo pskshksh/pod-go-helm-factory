@@ -14,6 +14,8 @@ const (
 	FILE_DEPLOYMENT     = "templates/deployment.yaml"
 	FILE_SERVICE        = "templates/service.yaml"
 	FILE_SERVICEACCOUNT = "templates/serviceaccount.yaml"
+	FILE_NETWORKPOLICY  = "templates/networkpolicy.yaml"
+	FILE_PDB            = "templates/poddisruptionbudget.yaml"
 )
 
 // Workload selects the Kubernetes controller a Service chart generates.
@@ -79,9 +81,43 @@ type Service struct {
 	// (a Deployment's selector is immutable, so it can't just change).
 	LegacySelectorLabels bool
 
-	// Blocks come in later steps: Ingress, Autoscale, PodDisruptionBudget,
-	// NetworkPolicy, ServiceMonitor, and an Extra escape hatch. The struct
-	// will grow — that's expected.
+	// NetworkPolicy, when non-nil, generates a default-deny NetworkPolicy for
+	// the workload (nil = no policy). See the NetworkPolicy type.
+	NetworkPolicy *NetworkPolicy
+
+	// PodDisruptionBudget, when non-nil, generates a PDB (nil = no PDB).
+	PodDisruptionBudget *PodDisruptionBudget
+
+	// More blocks come in later steps: Ingress, Autoscale, ServiceMonitor, and
+	// an Extra escape hatch. The struct will grow — that's expected.
+}
+
+// NetworkPolicy is an opt-in default-deny NetworkPolicy for the workload. When
+// attached to a Service, all ingress and egress is denied by default. Egress to
+// the cluster DNS is always allowed — a deny-all that broke name resolution
+// would be a footgun — and AllowSameNamespace opens same-namespace traffic both
+// directions.
+type NetworkPolicy struct {
+	// AllowSameNamespace permits ingress from, and egress to, other pods in the
+	// same namespace. Cross-namespace and external traffic stay denied.
+	AllowSameNamespace bool
+}
+
+// PodDisruptionBudget is an opt-in PDB that keeps a minimum number of pods
+// running during voluntary disruptions (node drains, rollouts). Set exactly one
+// of MinAvailable or MaxUnavailable; when both are empty it defaults to a
+// MinAvailable of 1. Values are counts ("2") or percentages ("50%").
+type PodDisruptionBudget struct {
+	MinAvailable   string
+	MaxUnavailable string
+}
+
+// validate rejects setting both bounds, which the Kubernetes API forbids.
+func (p PodDisruptionBudget) validate() error {
+	if p.MinAvailable != "" && p.MaxUnavailable != "" {
+		return fmt.Errorf("charts: podDisruptionBudget: set only one of MinAvailable or MaxUnavailable")
+	}
+	return nil
 }
 
 func (s Service) ChartName() string {
@@ -96,6 +132,12 @@ func (s Service) Generate(ctx context.Context, dir, version string) (string, err
 	}
 	if version == "" {
 		return "", fmt.Errorf("charts: '%s': version is required", name)
+	}
+	if s.PodDisruptionBudget != nil {
+		err = s.PodDisruptionBudget.validate()
+		if err != nil {
+			return "", err
+		}
 	}
 
 	chartDir, err := createChartDir(dir, name)
@@ -131,6 +173,20 @@ func (s Service) Generate(ctx context.Context, dir, version string) (string, err
 	err = writeFile(chartDir, FILE_SERVICEACCOUNT, s.serviceaccountYAML())
 	if err != nil {
 		return "", err
+	}
+
+	if s.NetworkPolicy != nil {
+		err = writeFile(chartDir, FILE_NETWORKPOLICY, s.networkPolicyYAML())
+		if err != nil {
+			return "", err
+		}
+	}
+
+	if s.PodDisruptionBudget != nil {
+		err = writeFile(chartDir, FILE_PDB, s.podDisruptionBudgetYAML())
+		if err != nil {
+			return "", err
+		}
 	}
 
 	return chartDir, nil

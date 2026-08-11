@@ -82,9 +82,14 @@ const (
 	API_APPS_V1 = "apps/v1"
 	API_CORE_V1 = "v1"
 
+	API_NETWORKING_V1 = "networking.k8s.io/v1"
+	API_POLICY_V1     = "policy/v1"
+
 	KIND_DEPLOYMENT     = "Deployment"
 	KIND_SERVICE        = "Service"
 	KIND_SERVICEACCOUNT = "ServiceAccount"
+	KIND_NETWORKPOLICY  = "NetworkPolicy"
+	KIND_PDB            = "PodDisruptionBudget"
 )
 
 // Repeated manifest literal values.
@@ -93,9 +98,18 @@ const (
 	SECCOMP_RUNTIME_DEFAULT = "RuntimeDefault"
 	PORT_NAME_HTTP          = "http"
 	PROTOCOL_TCP            = "TCP"
+	PROTOCOL_UDP            = "UDP"
 	CAP_ALL                 = "ALL"
 	TMP_VOLUME_NAME         = "tmp"
 	TMP_MOUNT_PATH          = "/tmp"
+
+	// NetworkPolicy.
+	POLICY_TYPE_INGRESS = "Ingress"
+	POLICY_TYPE_EGRESS  = "Egress"
+	DNS_PORT            = 53
+
+	// PodDisruptionBudget default: keep at least one pod during disruptions.
+	DEFAULT_MIN_AVAILABLE = "1"
 )
 
 // YAML keys. Named so a key is written once and reused everywhere it appears,
@@ -161,6 +175,19 @@ const (
 	KEY_TARGET_PORT     = "targetPort"
 	KEY_VOLUME_MOUNTS   = "volumeMounts"
 	KEY_MOUNT_PATH      = "mountPath"
+
+	// NetworkPolicy.
+	KEY_POD_SELECTOR       = "podSelector"
+	KEY_NAMESPACE_SELECTOR = "namespaceSelector"
+	KEY_POLICY_TYPES       = "policyTypes"
+	KEY_INGRESS            = "ingress"
+	KEY_EGRESS             = "egress"
+	KEY_FROM               = "from"
+	KEY_TO                 = "to"
+
+	// PodDisruptionBudget.
+	KEY_MIN_AVAILABLE   = "minAvailable"
+	KEY_MAX_UNAVAILABLE = "maxUnavailable"
 
 	// securityContext.
 	KEY_SECURITY_CONTEXT      = "securityContext"
@@ -527,6 +554,89 @@ func (s Service) serviceaccountYAML() string {
 	y.Line(1, KEY_LABELS+":")
 	y.Line(2, s.includeLabels(4))
 	y.Bool(0, KEY_AUTOMOUNT_SA_TOKEN, s.automountSAToken())
+
+	return y.String()
+}
+
+// networkPolicyYAML renders templates/networkpolicy.yaml: a default-deny policy
+// scoped to this workload's pods. Ingress and egress are denied by default;
+// egress to the cluster DNS (port 53) is always allowed so name resolution keeps
+// working, and AllowSameNamespace opens same-namespace traffic both directions.
+// Only called when s.NetworkPolicy is non-nil.
+func (s Service) networkPolicyYAML() string {
+	allowSameNS := s.NetworkPolicy.AllowSameNamespace
+	dnsPort := strconv.Itoa(DNS_PORT)
+	var y render.YAML
+
+	y.Field(0, KEY_API_VERSION, API_NETWORKING_V1)
+	y.Field(0, KEY_KIND, KIND_NETWORKPOLICY)
+	y.Line(0, KEY_METADATA+":")
+	y.Line(1, KEY_NAME+": "+s.includeFullname())
+	y.Line(1, KEY_LABELS+":")
+	y.Line(2, s.includeLabels(4))
+
+	y.Line(0, KEY_SPEC+":")
+	y.Line(1, KEY_POD_SELECTOR+":")
+	y.Line(2, KEY_MATCH_LABELS+":")
+	y.Line(3, s.includeSelectorLabels(6))
+	y.Line(1, KEY_POLICY_TYPES+":")
+	y.Line(2, "- "+POLICY_TYPE_INGRESS)
+	y.Line(2, "- "+POLICY_TYPE_EGRESS)
+
+	// Ingress: default-deny (no rules). Optionally allow same-namespace pods.
+	if allowSameNS {
+		y.Line(1, KEY_INGRESS+":")
+		y.Line(2, "- "+KEY_FROM+":")
+		y.Line(4, "- "+KEY_POD_SELECTOR+": {}")
+	}
+
+	// Egress: default-deny. Same-namespace (optional) precedes the always-on DNS
+	// allow.
+	y.Line(1, KEY_EGRESS+":")
+	if allowSameNS {
+		y.Line(2, "- "+KEY_TO+":")
+		y.Line(4, "- "+KEY_POD_SELECTOR+": {}")
+	}
+	y.Line(2, "- "+KEY_TO+":")
+	y.Line(4, "- "+KEY_NAMESPACE_SELECTOR+": {}")
+	y.Line(3, KEY_PORTS+":")
+	y.Line(4, "- "+KEY_PROTOCOL+": "+PROTOCOL_UDP)
+	y.Line(5, KEY_PORT+": "+dnsPort)
+	y.Line(4, "- "+KEY_PROTOCOL+": "+PROTOCOL_TCP)
+	y.Line(5, KEY_PORT+": "+dnsPort)
+
+	return y.String()
+}
+
+// podDisruptionBudgetYAML renders templates/poddisruptionbudget.yaml. It emits
+// exactly one bound: maxUnavailable when set, otherwise minAvailable (defaulting
+// to DEFAULT_MIN_AVAILABLE). Values pass through verbatim so a count renders as a
+// YAML int and a percentage ("50%") as a YAML string, both valid intOrString.
+// Only called when s.PodDisruptionBudget is non-nil (and validated).
+func (s Service) podDisruptionBudgetYAML() string {
+	pdb := s.PodDisruptionBudget
+	var y render.YAML
+
+	y.Field(0, KEY_API_VERSION, API_POLICY_V1)
+	y.Field(0, KEY_KIND, KIND_PDB)
+	y.Line(0, KEY_METADATA+":")
+	y.Line(1, KEY_NAME+": "+s.includeFullname())
+	y.Line(1, KEY_LABELS+":")
+	y.Line(2, s.includeLabels(4))
+
+	y.Line(0, KEY_SPEC+":")
+	if pdb.MaxUnavailable != "" {
+		y.Line(1, KEY_MAX_UNAVAILABLE+": "+pdb.MaxUnavailable)
+	} else {
+		minAvailable := pdb.MinAvailable
+		if minAvailable == "" {
+			minAvailable = DEFAULT_MIN_AVAILABLE
+		}
+		y.Line(1, KEY_MIN_AVAILABLE+": "+minAvailable)
+	}
+	y.Line(1, KEY_SELECTOR+":")
+	y.Line(2, KEY_MATCH_LABELS+":")
+	y.Line(3, s.includeSelectorLabels(6))
 
 	return y.String()
 }

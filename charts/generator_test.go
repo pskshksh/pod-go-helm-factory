@@ -55,6 +55,18 @@ func TestGenerateSnapshots(t *testing.T) {
 				Description: "Demo API service",
 			},
 		},
+		{
+			// Every opt-in block enabled, so one snapshot covers that all the
+			// gated files are generated and wired together.
+			id:      "service_api_blocks.yaml",
+			version: "0.1.0",
+			gen: Service{
+				Name:                "api",
+				Description:         "Demo API service",
+				NetworkPolicy:       &NetworkPolicy{AllowSameNamespace: true},
+				PodDisruptionBudget: &PodDisruptionBudget{},
+			},
+		},
 	}
 
 	for _, c := range cases {
