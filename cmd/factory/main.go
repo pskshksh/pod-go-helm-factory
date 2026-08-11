@@ -9,14 +9,19 @@ import (
 )
 
 func main() {
-	api := charts.Service{
-		Name:        "api",
-		Description: "Demo api srv",
+	app := charts.Service{
+		Name:        "sampleapp",
+		Description: "Sample HTTP service",
+		Container: charts.Container{
+			Image: "ghcr.io/pskshksh/pod-go-helm-factory/sampleapp",
+		},
+		NetworkPolicy:       &charts.NetworkPolicy{AllowSameNamespace: true},
+		PodDisruptionBudget: &charts.PodDisruptionBudget{},
 	}
 
-	dir, err := api.Generate(context.Background(), "dist", "0.1.0")
+	dir, err := app.Generate(context.Background(), "dist", "0.1.0")
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("Generated: ", dir)
+	fmt.Println("Generated:", dir)
 }

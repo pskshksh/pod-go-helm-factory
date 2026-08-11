@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-ed:"; echo "$unformatted"; exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test ./...
+
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: azure/setup-helm@v4
+      - name: Generate charts
+        run: go run ./cmd/factory
+      - name: helm lint
+        run: helm lint dist/sampleapp
+      - name: helm template
+        run: helm template sampleapp dist/sampleapp
+
+  image:
+    # Build+push the sample app image. Skipped on pull_request: the GITHUB_TOKEN
+    # has no packages:write for fork PRs, and we do not push untrusted code.
+    needs: [test, chart]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}/sampleapp
+          tags: |
+            type=sha
+            type=ref,event=tag
+            type=raw,value=latest,enable={{is_default_branch}}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./cmd/sampleapp/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  # Continuous delivery (deploy to a cluster) is intentionally not wired yet: it
+  # needs the cmd/deploy Deployer and a KUBECONFIG secret. Add a `deploy` job
+  # here (needs: [image]) once those exist — see docs/deploy-and-upgrade.md.
