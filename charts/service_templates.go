@@ -1,6 +1,7 @@
 package charts
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 
@@ -76,6 +77,105 @@ SELECTOR
 `
 )
 
+// Kubernetes apiVersions and kinds emitted by the templates.
+const (
+	API_APPS_V1 = "apps/v1"
+	API_CORE_V1 = "v1"
+
+	KIND_DEPLOYMENT     = "Deployment"
+	KIND_SERVICE        = "Service"
+	KIND_SERVICEACCOUNT = "ServiceAccount"
+)
+
+// Repeated manifest literal values.
+const (
+	SERVICE_TYPE_CLUSTERIP  = "ClusterIP"
+	SECCOMP_RUNTIME_DEFAULT = "RuntimeDefault"
+	PORT_NAME_HTTP          = "http"
+	PROTOCOL_TCP            = "TCP"
+	CAP_ALL                 = "ALL"
+	TMP_VOLUME_NAME         = "tmp"
+	TMP_MOUNT_PATH          = "/tmp"
+)
+
+// YAML keys. Named so a key is written once and reused everywhere it appears,
+// keeping the generated manifests consistent and typo-proof.
+const (
+	// Chart / metadata.
+	KEY_API_VERSION = "apiVersion"
+	KEY_KIND        = "kind"
+	KEY_METADATA    = "metadata"
+	KEY_NAME        = "name"
+	KEY_LABELS      = "labels"
+	KEY_DESCRIPTION = "description"
+	KEY_VERSION     = "version"
+	KEY_APP_VERSION = "appVersion"
+
+	// values.yaml surface.
+	KEY_REPLICA_COUNT      = "replicaCount"
+	KEY_IMAGE              = "image"
+	KEY_REPOSITORY         = "repository"
+	KEY_TAG                = "tag"
+	KEY_PULL_POLICY        = "pullPolicy"
+	KEY_IMAGE_PULL_SECRETS = "imagePullSecrets"
+	KEY_RESOURCES          = "resources"
+	KEY_REQUESTS           = "requests"
+	KEY_LIMITS             = "limits"
+	KEY_CPU                = "cpu"
+	KEY_MEMORY             = "memory"
+	KEY_POD_ANNOTATIONS    = "podAnnotations"
+	KEY_NODE_SELECTOR      = "nodeSelector"
+	KEY_TOLERATIONS        = "tolerations"
+	KEY_AFFINITY           = "affinity"
+
+	// Deployment / pod spec.
+	KEY_SPEC               = "spec"
+	KEY_REPLICAS           = "replicas"
+	KEY_STRATEGY           = "strategy"
+	KEY_TYPE               = "type"
+	KEY_SELECTOR           = "selector"
+	KEY_MATCH_LABELS       = "matchLabels"
+	KEY_TEMPLATE           = "template"
+	KEY_ANNOTATIONS        = "annotations"
+	KEY_SERVICE_ACCOUNT    = "serviceAccountName"
+	KEY_AUTOMOUNT_SA_TOKEN = "automountServiceAccountToken"
+	KEY_CONTAINERS         = "containers"
+	KEY_IMAGE_PULL_POLICY  = "imagePullPolicy"
+	KEY_VOLUMES            = "volumes"
+	KEY_EMPTY_DIR          = "emptyDir"
+
+	// Container.
+	KEY_ENV             = "env"
+	KEY_VALUE           = "value"
+	KEY_ENV_FROM        = "envFrom"
+	KEY_SECRET_REF      = "secretRef"
+	KEY_CONFIGMAP_REF   = "configMapRef"
+	KEY_PORTS           = "ports"
+	KEY_CONTAINER_PORT  = "containerPort"
+	KEY_PROTOCOL        = "protocol"
+	KEY_LIVENESS_PROBE  = "livenessProbe"
+	KEY_READINESS_PROBE = "readinessProbe"
+	KEY_HTTP_GET        = "httpGet"
+	KEY_PATH            = "path"
+	KEY_PORT            = "port"
+	KEY_TARGET_PORT     = "targetPort"
+	KEY_VOLUME_MOUNTS   = "volumeMounts"
+	KEY_MOUNT_PATH      = "mountPath"
+
+	// securityContext.
+	KEY_SECURITY_CONTEXT      = "securityContext"
+	KEY_RUN_AS_NON_ROOT       = "runAsNonRoot"
+	KEY_RUN_AS_USER           = "runAsUser"
+	KEY_RUN_AS_GROUP          = "runAsGroup"
+	KEY_FS_GROUP              = "fsGroup"
+	KEY_SECCOMP_PROFILE       = "seccompProfile"
+	KEY_ALLOW_PRIV_ESCALATION = "allowPrivilegeEscalation"
+	KEY_READ_ONLY_ROOT_FS     = "readOnlyRootFilesystem"
+	KEY_PRIVILEGED            = "privileged"
+	KEY_CAPABILITIES          = "capabilities"
+	KEY_DROP                  = "drop"
+)
+
 // replicas is the desired replica count, defaulting to DEFAULT_REPLICAS.
 func (s Service) replicas() int {
 	if s.Replicas > 0 {
@@ -149,6 +249,34 @@ func (s Service) strategyType() string {
 	return STRATEGY_ROLLING
 }
 
+// includeFullname returns the Helm include expression for the chart's fullname.
+func (s Service) includeFullname() string {
+	return `{{ include "` + s.Name + `.fullname" . }}`
+}
+
+// includeLabels returns the include expression for the chart's labels, trimmed
+// and re-indented by nindent spaces.
+func (s Service) includeLabels(nindent int) string {
+	return `{{- include "` + s.Name + `.labels" . | nindent ` + strconv.Itoa(nindent) + ` }}`
+}
+
+// includeSelectorLabels returns the include expression for the chart's selector
+// labels, trimmed and re-indented by nindent spaces.
+func (s Service) includeSelectorLabels(nindent int) string {
+	return `{{- include "` + s.Name + `.selectorLabels" . | nindent ` + strconv.Itoa(nindent) + ` }}`
+}
+
+// writeValuesBlock emits an optional block that renders only when the values key
+// is set: a {{- with .Values.<valuesKey> }} guard, the <header> key, and the
+// value merged in via toYaml. header often equals valuesKey (nodeSelector), but
+// not always (podAnnotations renders under "annotations").
+func writeValuesBlock(y *render.YAML, indent int, valuesKey, header string) {
+	y.Line(indent, "{{- with .Values."+valuesKey+" }}")
+	y.Line(indent, header+":")
+	y.Line(indent+1, "{{- toYaml . | nindent "+strconv.Itoa((indent+1)*2)+" }}")
+	y.Line(indent, "{{- end }}")
+}
+
 // chartYAML renders Chart.yaml.
 func (s Service) chartYAML(version string) string {
 	desc := s.Description
@@ -157,12 +285,12 @@ func (s Service) chartYAML(version string) string {
 	}
 
 	var y render.YAML
-	y.Field(0, "apiVersion", CHART_API_VERSION)
-	y.Field(0, "name", s.Name)
-	y.Field(0, "description", desc)
-	y.Field(0, "type", CHART_TYPE)
-	y.Field(0, "version", version)
-	y.Field(0, "appVersion", version)
+	y.Field(0, KEY_API_VERSION, CHART_API_VERSION)
+	y.Field(0, KEY_NAME, s.Name)
+	y.Field(0, KEY_DESCRIPTION, desc)
+	y.Field(0, KEY_TYPE, CHART_TYPE)
+	y.Field(0, KEY_VERSION, version)
+	y.Field(0, KEY_APP_VERSION, version)
 	return y.String()
 }
 
@@ -173,27 +301,27 @@ func (s Service) valuesYAML() string {
 	y.Line(0, "# Default values for the "+s.Name+" chart.")
 	y.Line(0, "# The chart structure is generated; these are the per-environment")
 	y.Line(0, "# knobs Helm fills in at install time.")
-	y.Line(0, "replicaCount: "+strconv.Itoa(s.replicas()))
+	y.Line(0, KEY_REPLICA_COUNT+": "+strconv.Itoa(s.replicas()))
 	y.Line(0, "")
-	y.Line(0, "image:")
-	y.Field(1, "repository", s.imageRepository())
-	y.Field(1, "tag", "") // empty => defaults to .Chart.AppVersion in the templates
-	y.Field(1, "pullPolicy", DEFAULT_PULL_POLICY)
+	y.Line(0, KEY_IMAGE+":")
+	y.Field(1, KEY_REPOSITORY, s.imageRepository())
+	y.Field(1, KEY_TAG, "") // empty => defaults to .Chart.AppVersion in the templates
+	y.Field(1, KEY_PULL_POLICY, DEFAULT_PULL_POLICY)
 	y.Line(0, "")
-	y.Line(0, "imagePullSecrets: []")
+	y.Line(0, KEY_IMAGE_PULL_SECRETS+": []")
 	y.Line(0, "")
-	y.Line(0, "resources:")
-	y.Line(1, "requests:")
-	y.Field(2, "cpu", DEFAULT_CPU_REQUEST)
-	y.Field(2, "memory", DEFAULT_MEM_REQUEST)
-	y.Line(1, "limits:")
-	y.Field(2, "cpu", DEFAULT_CPU_LIMIT)
-	y.Field(2, "memory", DEFAULT_MEM_LIMIT)
+	y.Line(0, KEY_RESOURCES+":")
+	y.Line(1, KEY_REQUESTS+":")
+	y.Field(2, KEY_CPU, DEFAULT_CPU_REQUEST)
+	y.Field(2, KEY_MEMORY, DEFAULT_MEM_REQUEST)
+	y.Line(1, KEY_LIMITS+":")
+	y.Field(2, KEY_CPU, DEFAULT_CPU_LIMIT)
+	y.Field(2, KEY_MEMORY, DEFAULT_MEM_LIMIT)
 	y.Line(0, "")
-	y.Line(0, "podAnnotations: {}")
-	y.Line(0, "nodeSelector: {}")
-	y.Line(0, "tolerations: []")
-	y.Line(0, "affinity: {}")
+	y.Line(0, KEY_POD_ANNOTATIONS+": {}")
+	y.Line(0, KEY_NODE_SELECTOR+": {}")
+	y.Line(0, KEY_TOLERATIONS+": []")
+	y.Line(0, KEY_AFFINITY+": {}")
 	return y.String()
 }
 
@@ -217,13 +345,13 @@ app.kubernetes.io/instance: {{ .Release.Name }}`
 // the Pod Security Standards "restricted" profile.
 func (s Service) writePodSecurityContext(y *render.YAML, indent int) {
 	uid := strconv.Itoa(s.runAsUser())
-	y.Line(indent, "securityContext:")
-	y.Bool(indent+1, "runAsNonRoot", true)
-	y.Line(indent+1, "runAsUser: "+uid)
-	y.Line(indent+1, "runAsGroup: "+uid)
-	y.Line(indent+1, "fsGroup: "+uid)
-	y.Line(indent+1, "seccompProfile:")
-	y.Field(indent+2, "type", "RuntimeDefault")
+	y.Line(indent, KEY_SECURITY_CONTEXT+":")
+	y.Bool(indent+1, KEY_RUN_AS_NON_ROOT, true)
+	y.Line(indent+1, KEY_RUN_AS_USER+": "+uid)
+	y.Line(indent+1, KEY_RUN_AS_GROUP+": "+uid)
+	y.Line(indent+1, KEY_FS_GROUP+": "+uid)
+	y.Line(indent+1, KEY_SECCOMP_PROFILE+":")
+	y.Field(indent+2, KEY_TYPE, SECCOMP_RUNTIME_DEFAULT)
 }
 
 // writeContainerSecurityContext emits the container-level securityContext into
@@ -233,15 +361,54 @@ func (s Service) writePodSecurityContext(y *render.YAML, indent int) {
 // allowPrivilegeEscalation and readOnlyRootFilesystem come straight from the
 // descriptor's hardened-by-default fields.
 func (s Service) writeContainerSecurityContext(y *render.YAML, indent int) {
-	y.Line(indent, "securityContext:")
-	y.Bool(indent+1, "allowPrivilegeEscalation", s.AllowPrivilegeEscalation)
-	y.Bool(indent+1, "readOnlyRootFilesystem", s.readOnlyRootFilesystem())
-	y.Bool(indent+1, "privileged", false)
-	y.Line(indent+1, "capabilities:")
-	y.Line(indent+2, "drop:")
-	y.Line(indent+2, "- ALL")
-	y.Line(indent+1, "seccompProfile:")
-	y.Field(indent+2, "type", "RuntimeDefault")
+	y.Line(indent, KEY_SECURITY_CONTEXT+":")
+	y.Bool(indent+1, KEY_ALLOW_PRIV_ESCALATION, s.AllowPrivilegeEscalation)
+	y.Bool(indent+1, KEY_READ_ONLY_ROOT_FS, s.readOnlyRootFilesystem())
+	y.Bool(indent+1, KEY_PRIVILEGED, false)
+	y.Line(indent+1, KEY_CAPABILITIES+":")
+	y.Line(indent+2, KEY_DROP+":")
+	y.Line(indent+2, "- "+CAP_ALL)
+	y.Line(indent+1, KEY_SECCOMP_PROFILE+":")
+	y.Field(indent+2, KEY_TYPE, SECCOMP_RUNTIME_DEFAULT)
+}
+
+// writeEnv emits the container's literal environment variables into y, sorted by
+// key for deterministic output. Nothing is written when there are none.
+func (s Service) writeEnv(y *render.YAML, indent int) {
+	if len(s.Container.Env) == 0 {
+		return
+	}
+
+	keys := make([]string, 0, len(s.Container.Env))
+	for k := range s.Container.Env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	y.Line(indent, KEY_ENV+":")
+	for _, k := range keys {
+		y.Line(indent+1, "- "+KEY_NAME+": "+k)
+		y.Field(indent+2, KEY_VALUE, s.Container.Env[k])
+	}
+}
+
+// writeEnvFrom emits envFrom sources for the container's Secrets and ConfigMaps,
+// exposing each one's keys as environment variables. Nothing is written when
+// there are none.
+func (s Service) writeEnvFrom(y *render.YAML, indent int) {
+	if len(s.Container.Secrets) == 0 && len(s.Container.ConfigMaps) == 0 {
+		return
+	}
+
+	y.Line(indent, KEY_ENV_FROM+":")
+	for _, name := range s.Container.Secrets {
+		y.Line(indent+1, "- "+KEY_SECRET_REF+":")
+		y.Field(indent+3, KEY_NAME, name)
+	}
+	for _, name := range s.Container.ConfigMaps {
+		y.Line(indent+1, "- "+KEY_CONFIGMAP_REF+":")
+		y.Field(indent+3, KEY_NAME, name)
+	}
 }
 
 // deploymentYAML renders templates/deployment.yaml. The manifest structure,
@@ -250,87 +417,73 @@ func (s Service) writeContainerSecurityContext(y *render.YAML, indent int) {
 // fills in at install time. Only the zero-value Kind (Deployment) is emitted
 // today; other workload kinds come in a later step.
 func (s Service) deploymentYAML() string {
-	name := s.Name
 	var y render.YAML
 
-	y.Field(0, "apiVersion", "apps/v1")
-	y.Field(0, "kind", "Deployment")
-	y.Line(0, "metadata:")
-	y.Line(1, `name: {{ include "`+name+`.fullname" . }}`)
-	y.Line(1, "labels:")
-	y.Line(2, `{{- include "`+name+`.labels" . | nindent 4 }}`)
+	y.Field(0, KEY_API_VERSION, API_APPS_V1)
+	y.Field(0, KEY_KIND, KIND_DEPLOYMENT)
+	y.Line(0, KEY_METADATA+":")
+	y.Line(1, KEY_NAME+": "+s.includeFullname())
+	y.Line(1, KEY_LABELS+":")
+	y.Line(2, s.includeLabels(4))
 
-	y.Line(0, "spec:")
-	y.Line(1, "replicas: {{ .Values.replicaCount }}")
-	y.Line(1, "strategy:")
-	y.Field(2, "type", s.strategyType())
-	y.Line(1, "selector:")
-	y.Line(2, "matchLabels:")
-	y.Line(3, `{{- include "`+name+`.selectorLabels" . | nindent 6 }}`)
+	y.Line(0, KEY_SPEC+":")
+	y.Line(1, KEY_REPLICAS+": {{ .Values.replicaCount }}")
+	y.Line(1, KEY_STRATEGY+":")
+	y.Field(2, KEY_TYPE, s.strategyType())
+	y.Line(1, KEY_SELECTOR+":")
+	y.Line(2, KEY_MATCH_LABELS+":")
+	y.Line(3, s.includeSelectorLabels(6))
 
-	y.Line(1, "template:")
-	y.Line(2, "metadata:")
-	y.Line(3, "labels:")
-	y.Line(4, `{{- include "`+name+`.selectorLabels" . | nindent 8 }}`)
-	y.Line(3, "{{- with .Values.podAnnotations }}")
-	y.Line(3, "annotations:")
-	y.Line(4, "{{- toYaml . | nindent 8 }}")
-	y.Line(3, "{{- end }}")
+	y.Line(1, KEY_TEMPLATE+":")
+	y.Line(2, KEY_METADATA+":")
+	y.Line(3, KEY_LABELS+":")
+	y.Line(4, s.includeSelectorLabels(8))
+	writeValuesBlock(&y, 3, KEY_POD_ANNOTATIONS, KEY_ANNOTATIONS)
 
-	y.Line(2, "spec:")
-	y.Line(3, `serviceAccountName: {{ include "`+name+`.fullname" . }}`)
-	y.Bool(3, "automountServiceAccountToken", s.automountSAToken())
-	y.Line(3, "{{- with .Values.imagePullSecrets }}")
-	y.Line(3, "imagePullSecrets:")
-	y.Line(4, "{{- toYaml . | nindent 8 }}")
-	y.Line(3, "{{- end }}")
+	y.Line(2, KEY_SPEC+":")
+	y.Line(3, KEY_SERVICE_ACCOUNT+": "+s.includeFullname())
+	y.Bool(3, KEY_AUTOMOUNT_SA_TOKEN, s.automountSAToken())
+	writeValuesBlock(&y, 3, KEY_IMAGE_PULL_SECRETS, KEY_IMAGE_PULL_SECRETS)
 	s.writePodSecurityContext(&y, 3)
 
-	y.Line(3, "containers:")
-	y.Line(4, "- name: "+name)
-	y.Line(5, `image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"`)
-	y.Line(5, "imagePullPolicy: {{ .Values.image.pullPolicy }}")
-	y.Line(5, "ports:")
-	y.Line(6, "- name: http")
-	y.Line(7, "containerPort: "+strconv.Itoa(s.containerPort()))
-	y.Field(7, "protocol", "TCP")
-	y.Line(5, "livenessProbe:")
-	y.Line(6, "httpGet:")
-	y.Field(7, "path", s.livenessPath())
-	y.Field(7, "port", "http")
-	y.Line(5, "readinessProbe:")
-	y.Line(6, "httpGet:")
-	y.Field(7, "path", s.readinessPath())
-	y.Field(7, "port", "http")
-	y.Line(5, "resources:")
-	y.Line(6, "{{- toYaml .Values.resources | nindent 12 }}")
+	y.Line(3, KEY_CONTAINERS+":")
+	y.Line(4, "- "+KEY_NAME+": "+s.Name)
+	y.Line(5, KEY_IMAGE+`: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"`)
+	y.Line(5, KEY_IMAGE_PULL_POLICY+": {{ .Values.image.pullPolicy }}")
+	s.writeEnv(&y, 5)
+	s.writeEnvFrom(&y, 5)
+	y.Line(5, KEY_PORTS+":")
+	y.Line(6, "- "+KEY_NAME+": "+PORT_NAME_HTTP)
+	y.Line(7, KEY_CONTAINER_PORT+": "+strconv.Itoa(s.containerPort()))
+	y.Field(7, KEY_PROTOCOL, PROTOCOL_TCP)
+	y.Line(5, KEY_LIVENESS_PROBE+":")
+	y.Line(6, KEY_HTTP_GET+":")
+	y.Field(7, KEY_PATH, s.livenessPath())
+	y.Field(7, KEY_PORT, PORT_NAME_HTTP)
+	y.Line(5, KEY_READINESS_PROBE+":")
+	y.Line(6, KEY_HTTP_GET+":")
+	y.Field(7, KEY_PATH, s.readinessPath())
+	y.Field(7, KEY_PORT, PORT_NAME_HTTP)
+	y.Line(5, KEY_RESOURCES+":")
+	y.Line(6, "{{- toYaml .Values."+KEY_RESOURCES+" | nindent 12 }}")
 	s.writeContainerSecurityContext(&y, 5)
 
 	// A read-only root filesystem needs a writable scratch dir for /tmp.
 	if s.readOnlyRootFilesystem() {
-		y.Line(5, "volumeMounts:")
-		y.Line(6, "- name: tmp")
-		y.Field(7, "mountPath", "/tmp")
+		y.Line(5, KEY_VOLUME_MOUNTS+":")
+		y.Line(6, "- "+KEY_NAME+": "+TMP_VOLUME_NAME)
+		y.Field(7, KEY_MOUNT_PATH, TMP_MOUNT_PATH)
 	}
 
 	if s.readOnlyRootFilesystem() {
-		y.Line(3, "volumes:")
-		y.Line(4, "- name: tmp")
-		y.Line(5, "emptyDir: {}")
+		y.Line(3, KEY_VOLUMES+":")
+		y.Line(4, "- "+KEY_NAME+": "+TMP_VOLUME_NAME)
+		y.Line(5, KEY_EMPTY_DIR+": {}")
 	}
 
-	y.Line(3, "{{- with .Values.nodeSelector }}")
-	y.Line(3, "nodeSelector:")
-	y.Line(4, "{{- toYaml . | nindent 8 }}")
-	y.Line(3, "{{- end }}")
-	y.Line(3, "{{- with .Values.affinity }}")
-	y.Line(3, "affinity:")
-	y.Line(4, "{{- toYaml . | nindent 8 }}")
-	y.Line(3, "{{- end }}")
-	y.Line(3, "{{- with .Values.tolerations }}")
-	y.Line(3, "tolerations:")
-	y.Line(4, "{{- toYaml . | nindent 8 }}")
-	y.Line(3, "{{- end }}")
+	writeValuesBlock(&y, 3, KEY_NODE_SELECTOR, KEY_NODE_SELECTOR)
+	writeValuesBlock(&y, 3, KEY_AFFINITY, KEY_AFFINITY)
+	writeValuesBlock(&y, 3, KEY_TOLERATIONS, KEY_TOLERATIONS)
 
 	return y.String()
 }
@@ -340,25 +493,24 @@ func (s Service) deploymentYAML() string {
 // "http" port, so the Service tracks the container port without duplicating the
 // number. The selector reuses the shared selectorLabels helper.
 func (s Service) serviceYAML() string {
-	name := s.Name
 	var y render.YAML
 
-	y.Field(0, "apiVersion", "v1")
-	y.Field(0, "kind", "Service")
-	y.Line(0, "metadata:")
-	y.Line(1, `name: {{ include "`+name+`.fullname" . }}`)
-	y.Line(1, "labels:")
-	y.Line(2, `{{- include "`+name+`.labels" . | nindent 4 }}`)
+	y.Field(0, KEY_API_VERSION, API_CORE_V1)
+	y.Field(0, KEY_KIND, KIND_SERVICE)
+	y.Line(0, KEY_METADATA+":")
+	y.Line(1, KEY_NAME+": "+s.includeFullname())
+	y.Line(1, KEY_LABELS+":")
+	y.Line(2, s.includeLabels(4))
 
-	y.Line(0, "spec:")
-	y.Field(1, "type", "ClusterIP")
-	y.Line(1, "ports:")
-	y.Line(2, "- name: http")
-	y.Line(3, "port: "+strconv.Itoa(DEFAULT_SERVICE_PORT))
-	y.Field(3, "targetPort", "http")
-	y.Field(3, "protocol", "TCP")
-	y.Line(1, "selector:")
-	y.Line(2, `{{- include "`+name+`.selectorLabels" . | nindent 4 }}`)
+	y.Line(0, KEY_SPEC+":")
+	y.Field(1, KEY_TYPE, SERVICE_TYPE_CLUSTERIP)
+	y.Line(1, KEY_PORTS+":")
+	y.Line(2, "- "+KEY_NAME+": "+PORT_NAME_HTTP)
+	y.Line(3, KEY_PORT+": "+strconv.Itoa(DEFAULT_SERVICE_PORT))
+	y.Field(3, KEY_TARGET_PORT, PORT_NAME_HTTP)
+	y.Field(3, KEY_PROTOCOL, PROTOCOL_TCP)
+	y.Line(1, KEY_SELECTOR+":")
+	y.Line(2, s.includeSelectorLabels(4))
 
 	return y.String()
 }
@@ -366,16 +518,15 @@ func (s Service) serviceYAML() string {
 // serviceaccountYAML renders templates/serviceaccount.yaml. The token is not
 // automounted by default (MountServiceAccountToken opts in).
 func (s Service) serviceaccountYAML() string {
-	name := s.Name
 	var y render.YAML
 
-	y.Field(0, "apiVersion", "v1")
-	y.Field(0, "kind", "ServiceAccount")
-	y.Line(0, "metadata:")
-	y.Line(1, `name: {{ include "`+name+`.fullname" . }}`)
-	y.Line(1, "labels:")
-	y.Line(2, `{{- include "`+name+`.labels" . | nindent 4 }}`)
-	y.Bool(0, "automountServiceAccountToken", s.automountSAToken())
+	y.Field(0, KEY_API_VERSION, API_CORE_V1)
+	y.Field(0, KEY_KIND, KIND_SERVICEACCOUNT)
+	y.Line(0, KEY_METADATA+":")
+	y.Line(1, KEY_NAME+": "+s.includeFullname())
+	y.Line(1, KEY_LABELS+":")
+	y.Line(2, s.includeLabels(4))
+	y.Bool(0, KEY_AUTOMOUNT_SA_TOKEN, s.automountSAToken())
 
 	return y.String()
 }

@@ -79,6 +79,66 @@ func TestSecurityContexts(t *testing.T) {
 	}
 }
 
+// TestWriteEnv confirms literal env vars render sorted by key, and that an empty
+// map emits nothing.
+func TestWriteEnv(t *testing.T) {
+	cases := []struct {
+		id   string
+		svc  Service
+		want string
+	}{
+		{"empty", Service{}, ""},
+		{
+			id:  "sorted_by_key",
+			svc: Service{Container: Container{Env: O{"B_KEY": "2", "A_KEY": "1"}}},
+			want: `env:
+  - name: A_KEY
+    value: "1"
+  - name: B_KEY
+    value: "2"
+`,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.id, func(t *testing.T) {
+			var y render.YAML
+			c.svc.writeEnv(&y, 0)
+			assertRender(t, y.String(), c.want)
+		})
+	}
+}
+
+// TestWriteEnvFrom confirms secretRef entries render before configMapRef ones,
+// and that no source emits nothing.
+func TestWriteEnvFrom(t *testing.T) {
+	cases := []struct {
+		id   string
+		svc  Service
+		want string
+	}{
+		{"empty", Service{}, ""},
+		{
+			id:  "secrets_then_configmaps",
+			svc: Service{Container: Container{Secrets: []string{"s1"}, ConfigMaps: []string{"c1"}}},
+			want: `envFrom:
+  - secretRef:
+      name: s1
+  - configMapRef:
+      name: c1
+`,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.id, func(t *testing.T) {
+			var y render.YAML
+			c.svc.writeEnvFrom(&y, 0)
+			assertRender(t, y.String(), c.want)
+		})
+	}
+}
+
 // TestSecurityAccessors confirms the zero value is hardened and each field
 // relaxes only its own control.
 func TestSecurityAccessors(t *testing.T) {
