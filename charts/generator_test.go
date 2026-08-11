@@ -91,6 +91,26 @@ func TestGenerateSnapshots(t *testing.T) {
 				},
 			},
 		},
+		{
+			id:      "service_api_statefulset.yaml",
+			version: "0.1.0",
+			gen:     Service{Name: "api", Description: "Demo API service", Kind: StatefulSet},
+		},
+		{
+			id:      "service_api_daemonset.yaml",
+			version: "0.1.0",
+			gen:     Service{Name: "api", Description: "Demo API service", Kind: DaemonSet},
+		},
+		{
+			id:      "service_api_job.yaml",
+			version: "0.1.0",
+			gen:     Service{Name: "api", Description: "Demo API service", Kind: Job},
+		},
+		{
+			id:      "service_api_cronjob.yaml",
+			version: "0.1.0",
+			gen:     Service{Name: "api", Description: "Demo API service", Kind: CronJob, Schedule: "*/5 * * * *"},
+		},
 	}
 
 	for _, c := range cases {

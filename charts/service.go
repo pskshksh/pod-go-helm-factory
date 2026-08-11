@@ -12,6 +12,10 @@ const (
 	FILE_VALUES_YAML    = "values.yaml"
 	FILE_HELPERS_TPL    = "templates/_helpers.tpl"
 	FILE_DEPLOYMENT     = "templates/deployment.yaml"
+	FILE_STATEFULSET    = "templates/statefulset.yaml"
+	FILE_DAEMONSET      = "templates/daemonset.yaml"
+	FILE_JOB            = "templates/job.yaml"
+	FILE_CRONJOB        = "templates/cronjob.yaml"
 	FILE_SERVICE        = "templates/service.yaml"
 	FILE_SERVICEACCOUNT = "templates/serviceaccount.yaml"
 	FILE_NETWORKPOLICY  = "templates/networkpolicy.yaml"
@@ -208,6 +212,9 @@ func (s Service) Generate(ctx context.Context, dir, version string) (string, err
 	if version == "" {
 		return "", fmt.Errorf("charts: '%s': version is required", name)
 	}
+	if s.Kind == CronJob && s.Schedule == "" {
+		return "", fmt.Errorf("charts: '%s': CronJob requires Schedule", name)
+	}
 	if s.PodDisruptionBudget != nil {
 		err = s.PodDisruptionBudget.validate()
 		if err != nil {
@@ -247,7 +254,7 @@ func (s Service) Generate(ctx context.Context, dir, version string) (string, err
 		return "", err
 	}
 
-	err = writeFile(chartDir, FILE_DEPLOYMENT, s.deploymentYAML())
+	err = writeFile(chartDir, s.workloadFile(), s.workloadYAML())
 	if err != nil {
 		return "", err
 	}

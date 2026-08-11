@@ -273,6 +273,16 @@ func TestServiceMonitorYAML(t *testing.T) {
 	}
 }
 
+// TestCronJobRequiresSchedule rejects a CronJob descriptor with no schedule.
+func TestCronJobRequiresSchedule(t *testing.T) {
+	svc := Service{Name: "api", Kind: CronJob}
+
+	_, err := svc.Generate(context.Background(), t.TempDir(), "0.1.0")
+	if err == nil {
+		t.Fatal("expected an error when a CronJob has no Schedule")
+	}
+}
+
 // TestSecurityAccessors confirms the zero value is hardened and each field
 // relaxes only its own control.
 func TestSecurityAccessors(t *testing.T) {
