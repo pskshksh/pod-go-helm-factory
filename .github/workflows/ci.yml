@@ -45,7 +45,7 @@ jobs:
       - name: helm template
         run: helm template sampleapp dist/sampleapp
       - name: validate deploy render
-        run: go run ./cmd/deploy --namespace ci --tag "${GITHUB_SHA::7}" --render
+        run: go run ./cmd/deploy --env staging --tag "${GITHUB_SHA::7}" --render
 
   image:
     # Build+push the sample app image. Skipped on pull_request: the GITHUB_TOKEN
@@ -110,4 +110,4 @@ jobs:
       - name: Deploy to staging
         if: steps.kube.outputs.enabled == 'true'
         # helm reads the default ~/.kube/config written by the previous step.
-        run: go run ./cmd/deploy --namespace staging --tag "${GITHUB_SHA::7}"
+        run: go run ./cmd/deploy --env staging --tag "${GITHUB_SHA::7}"

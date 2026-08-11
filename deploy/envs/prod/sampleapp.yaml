@@ -1,0 +1,9 @@
+# sampleapp in prod: more replicas and headroom.
+replicaCount: 3
+resources:
+  requests:
+    cpu: 200m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi

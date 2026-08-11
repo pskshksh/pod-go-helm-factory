@@ -19,17 +19,23 @@ import (
 const defaultChartVersion = "0.1.0"
 
 func main() {
-	namespace := flag.String("namespace", "", "target namespace (required)")
+	namespaceFlag := flag.String("namespace", "", "target namespace (default: --env)")
+	env := flag.String("env", "", "environment: selects deploy/envs/<env> overlays and defaults the namespace")
 	release := flag.String("release", "sampleapp", "catalog service / release name")
 	tag := flag.String("tag", "", "image tag (default: resolved git sha)")
 	version := flag.String("chart-version", defaultChartVersion, "chart version to stamp")
+	envsRoot := flag.String("envs-root", deploy.DefaultEnvsRoot, "root dir for env value overlays")
 	render := flag.Bool("render", false, "print manifests (helm template) instead of deploying")
-	var values datastructures.StringList
-	flag.Var(&values, "f", "values overlay file (repeatable)")
+	var extraValues datastructures.StringList
+	flag.Var(&extraValues, "f", "extra values file, applied after env overlays (repeatable)")
 	flag.Parse()
 
-	if *namespace == "" {
-		log.Fatal("deploy: --namespace is required")
+	namespace := *namespaceFlag
+	if namespace == "" {
+		namespace = *env
+	}
+	if namespace == "" {
+		log.Fatal("deploy: --namespace or --env is required")
 	}
 
 	svc, ok := catalog.Find(*release)
@@ -37,9 +43,13 @@ func main() {
 		log.Fatalf("deploy: no service %q in the catalog", *release)
 	}
 
+	// Env overlays first (base then env/service), explicit -f files after them.
+	values := deploy.Overlays(*envsRoot, *env, svc.ChartName())
+	values = append(values, extraValues...)
+
 	rel := deploy.Release{
 		Service:      svc,
-		Namespace:    *namespace,
+		Namespace:    namespace,
 		ChartVersion: *version,
 		ImageTag:     resolveTag(*tag),
 		Values:       values,
