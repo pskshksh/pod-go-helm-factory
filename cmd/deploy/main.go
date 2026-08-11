@@ -20,7 +20,8 @@ import (
 const defaultChartVersion = "0.1.0"
 
 func main() {
-	env := flag.String("env", "", "environment: the namespace and overlay selector (required)")
+	env := flag.String("env", "", "config environment: overlay selector, deploy/envs/<env> (required)")
+	namespace := flag.String("namespace", "", "target namespace (default: --env)")
 	release := flag.String("release", "", "deploy only this service (default: every service in the catalog)")
 	tag := flag.String("tag", "", "image tag (default: resolved git sha)")
 	version := flag.String("chart-version", defaultChartVersion, "chart version to stamp")
@@ -43,7 +44,7 @@ func main() {
 		services = []charts.Generator{svc}
 	}
 
-	environment := charts.Environment{Name: *env, Services: services}
+	environment := charts.Environment{Name: *env, Namespace: *namespace, Services: services}
 	opts := deploy.EnvOptions{
 		ChartVersion: *version,
 		ImageTag:     resolveTag(*tag),

@@ -52,6 +52,33 @@ func TestUpAllDeploysEachService(t *testing.T) {
 	}
 }
 
+// TestUpAllNamespaceOverride confirms env.Namespace targets a different
+// namespace than the config name, while overlays still key off the config name.
+func TestUpAllNamespaceOverride(t *testing.T) {
+	var namespaces []string
+	d := Deployer{Runner: func(_ context.Context, _ string, args ...string) error {
+		for i, a := range args {
+			if a == "--namespace" {
+				namespaces = append(namespaces, args[i+1])
+			}
+		}
+		return nil
+	}}
+
+	env := charts.Environment{
+		Name:      "prod", // config / overlay selector
+		Namespace: "toto", // target namespace
+		Services:  []charts.Generator{charts.Service{Name: "api"}},
+	}
+	err := d.UpAll(context.Background(), env, EnvOptions{ChartVersion: "0.1.0", EnvsRoot: t.TempDir()})
+	if err != nil {
+		t.Fatalf("UpAll: %v", err)
+	}
+	if len(namespaces) != 1 || namespaces[0] != "toto" {
+		t.Errorf("namespaces = %v, want [toto]", namespaces)
+	}
+}
+
 // TestUpAllStopsOnError confirms a failure aborts the loop before later services
 // are touched.
 func TestUpAllStopsOnError(t *testing.T) {
