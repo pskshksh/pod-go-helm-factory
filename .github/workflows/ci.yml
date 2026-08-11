@@ -44,6 +44,8 @@ jobs:
         run: helm lint dist/sampleapp
       - name: helm template
         run: helm template sampleapp dist/sampleapp
+      - name: validate deploy render
+        run: go run ./cmd/deploy --namespace ci --tag "${GITHUB_SHA::7}" --render
 
   image:
     # Build+push the sample app image. Skipped on pull_request: the GITHUB_TOKEN
@@ -78,6 +80,34 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-  # Continuous delivery (deploy to a cluster) is intentionally not wired yet: it
-  # needs the cmd/deploy Deployer and a KUBECONFIG secret. Add a `deploy` job
-  # here (needs: [image]) once those exist — see docs/deploy-and-upgrade.md.
+  deploy-staging:
+    # Deploy the pushed image to the staging namespace via cmd/deploy. Runs only
+    # on main, and no-ops unless a KUBECONFIG_DATA secret (base64 kubeconfig) is
+    # configured — so the pipeline stays green before a cluster is wired up.
+    needs: [image]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: azure/setup-helm@v4
+      - name: Configure kubeconfig
+        id: kube
+        env:
+          KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_DATA }}
+        run: |
+          if [ -z "$KUBECONFIG_DATA" ]; then
+            echo "No KUBECONFIG_DATA secret set — skipping deploy."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mkdir -p "$HOME/.kube"
+          echo "$KUBECONFIG_DATA" | base64 -d > "$HOME/.kube/config"
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+      - name: Deploy to staging
+        if: steps.kube.outputs.enabled == 'true'
+        # helm reads the default ~/.kube/config written by the previous step.
+        run: go run ./cmd/deploy --namespace staging --tag "${GITHUB_SHA::7}"

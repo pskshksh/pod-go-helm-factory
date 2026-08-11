@@ -5,23 +5,18 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/pskshksh/pod-go-helm-factory/charts"
+	"github.com/pskshksh/pod-go-helm-factory/catalog"
 )
 
-func main() {
-	app := charts.Service{
-		Name:        "sampleapp",
-		Description: "Sample HTTP service",
-		Container: charts.Container{
-			Image: "ghcr.io/pskshksh/pod-go-helm-factory/sampleapp",
-		},
-		NetworkPolicy:       &charts.NetworkPolicy{AllowSameNamespace: true},
-		PodDisruptionBudget: &charts.PodDisruptionBudget{},
-	}
+const chartVersion = "0.1.0"
 
-	dir, err := app.Generate(context.Background(), "dist", "0.1.0")
-	if err != nil {
-		log.Fatal(err)
+func main() {
+	ctx := context.Background()
+	for _, svc := range catalog.Services() {
+		dir, err := svc.Generate(ctx, "dist", chartVersion)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("Generated:", dir)
 	}
-	fmt.Println("Generated:", dir)
 }
