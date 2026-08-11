@@ -86,6 +86,7 @@ const (
 	API_POLICY_V1      = "policy/v1"
 	API_AUTOSCALING_V2 = "autoscaling/v2"
 	API_GATEWAY_V1     = "gateway.networking.k8s.io/v1"
+	API_MONITORING_V1  = "monitoring.coreos.com/v1"
 
 	KIND_DEPLOYMENT     = "Deployment"
 	KIND_SERVICE        = "Service"
@@ -95,6 +96,7 @@ const (
 	KIND_HPA            = "HorizontalPodAutoscaler"
 	KIND_INGRESS        = "Ingress"
 	KIND_HTTPROUTE      = "HTTPRoute"
+	KIND_SERVICEMONITOR = "ServiceMonitor"
 )
 
 // Repeated manifest literal values.
@@ -129,6 +131,10 @@ const (
 	DEFAULT_PATH          = "/"
 	PATH_TYPE_PREFIX      = "Prefix"     // networking.k8s.io Ingress
 	GATEWAY_PATH_PREFIX   = "PathPrefix" // Gateway API HTTPRoute
+
+	// ServiceMonitor.
+	DEFAULT_METRICS_PATH    = "/metrics"
+	DEFAULT_SCRAPE_INTERVAL = "30s"
 )
 
 // YAML keys. Named so a key is written once and reused everywhere it appears,
@@ -236,6 +242,10 @@ const (
 	KEY_HOSTNAMES    = "hostnames"
 	KEY_MATCHES      = "matches"
 	KEY_BACKEND_REFS = "backendRefs"
+
+	// ServiceMonitor.
+	KEY_ENDPOINTS = "endpoints"
+	KEY_INTERVAL  = "interval"
 
 	// securityContext.
 	KEY_SECURITY_CONTEXT      = "securityContext"
@@ -844,6 +854,59 @@ func (s Service) httpRouteYAML() string {
 	y.Line(3, KEY_BACKEND_REFS+":")
 	y.Line(4, "- "+KEY_NAME+": "+fullname)
 	y.Line(5, KEY_PORT+": "+strconv.Itoa(DEFAULT_SERVICE_PORT))
+
+	return y.String()
+}
+
+// metricsPort is the Service port name the ServiceMonitor scrapes (default the
+// chart's named "http" port).
+func (m ServiceMonitor) metricsPort() string {
+	if m.Port != "" {
+		return m.Port
+	}
+	return PORT_NAME_HTTP
+}
+
+// metricsPath is the ServiceMonitor scrape path, defaulting to
+// DEFAULT_METRICS_PATH.
+func (m ServiceMonitor) metricsPath() string {
+	if m.Path != "" {
+		return m.Path
+	}
+	return DEFAULT_METRICS_PATH
+}
+
+// scrapeInterval is the ServiceMonitor scrape interval, defaulting to
+// DEFAULT_SCRAPE_INTERVAL.
+func (m ServiceMonitor) scrapeInterval() string {
+	if m.Interval != "" {
+		return m.Interval
+	}
+	return DEFAULT_SCRAPE_INTERVAL
+}
+
+// serviceMonitorYAML renders templates/servicemonitor.yaml: a Prometheus
+// Operator ServiceMonitor that selects this chart's Service and scrapes the
+// named port. Only called when s.ServiceMonitor is non-nil.
+func (s Service) serviceMonitorYAML() string {
+	m := s.ServiceMonitor
+	var y render.YAML
+
+	y.Field(0, KEY_API_VERSION, API_MONITORING_V1)
+	y.Field(0, KEY_KIND, KIND_SERVICEMONITOR)
+	y.Line(0, KEY_METADATA+":")
+	y.Line(1, KEY_NAME+": "+s.includeFullname())
+	y.Line(1, KEY_LABELS+":")
+	y.Line(2, s.includeLabels(4))
+
+	y.Line(0, KEY_SPEC+":")
+	y.Line(1, KEY_SELECTOR+":")
+	y.Line(2, KEY_MATCH_LABELS+":")
+	y.Line(3, s.includeSelectorLabels(6))
+	y.Line(1, KEY_ENDPOINTS+":")
+	y.Line(2, "- "+KEY_PORT+": "+m.metricsPort())
+	y.Field(3, KEY_PATH, m.metricsPath())
+	y.Field(3, KEY_INTERVAL, m.scrapeInterval())
 
 	return y.String()
 }

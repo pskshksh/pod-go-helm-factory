@@ -240,6 +240,22 @@ metadata:
     {{- include "api.labels" . | nindent 4 }}
 automountServiceAccountToken: false
 
+# file: templates/servicemonitor.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "api.fullname" . }}
+  labels:
+    {{- include "api.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "api.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+
 # file: values.yaml
 # Default values for the api chart.
 # The chart structure is generated; these are the per-environment

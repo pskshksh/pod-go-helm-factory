@@ -200,6 +200,26 @@ func TestIngressValidate(t *testing.T) {
 	}
 }
 
+// TestServiceMonitorYAML pins the ServiceMonitor: field defaults and a fully
+// customized variant.
+func TestServiceMonitorYAML(t *testing.T) {
+	cases := []struct {
+		id   string
+		file string
+		sm   ServiceMonitor
+	}{
+		{"defaults", "servicemonitor_defaults.yaml", ServiceMonitor{}},
+		{"custom", "servicemonitor_custom.yaml", ServiceMonitor{Port: "metrics", Path: "/prometheus", Interval: "15s"}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.id, func(t *testing.T) {
+			svc := Service{Name: "api", ServiceMonitor: &c.sm}
+			assertFragment(t, svc.serviceMonitorYAML(), c.file)
+		})
+	}
+}
+
 // TestSecurityAccessors confirms the zero value is hardened and each field
 // relaxes only its own control.
 func TestSecurityAccessors(t *testing.T) {

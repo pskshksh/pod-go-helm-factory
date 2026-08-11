@@ -67,6 +67,7 @@ func TestGenerateSnapshots(t *testing.T) {
 				PodDisruptionBudget: &PodDisruptionBudget{},
 				Autoscale:           &Autoscale{MaxReplicas: 10, TargetMemoryUtilization: 75},
 				Ingress:             &Ingress{Host: "api.example.com", TLSSecret: "api-tls"},
+				ServiceMonitor:      &ServiceMonitor{},
 			},
 		},
 	}

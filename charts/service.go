@@ -18,6 +18,7 @@ const (
 	FILE_PDB            = "templates/poddisruptionbudget.yaml"
 	FILE_HPA            = "templates/hpa.yaml"
 	FILE_INGRESS        = "templates/ingress.yaml"
+	FILE_SERVICEMONITOR = "templates/servicemonitor.yaml"
 )
 
 // Workload selects the Kubernetes controller a Service chart generates.
@@ -97,8 +98,12 @@ type Service struct {
 	// Ingress, when non-nil, exposes the Service externally (nil = no route).
 	Ingress *Ingress
 
-	// More blocks come in later steps: ServiceMonitor and an Extra escape hatch.
-	// The struct will grow — that's expected.
+	// ServiceMonitor, when non-nil, generates a Prometheus Operator
+	// ServiceMonitor scraping the Service (nil = no ServiceMonitor).
+	ServiceMonitor *ServiceMonitor
+
+	// An Extra escape hatch comes in a later step. The struct will grow — that's
+	// expected.
 }
 
 // NetworkPolicy is an opt-in default-deny NetworkPolicy for the workload. When
@@ -179,6 +184,15 @@ func (i Ingress) validate() error {
 		return fmt.Errorf("charts: ingress: Envoy mode requires ClassName (the parent Gateway name)")
 	}
 	return nil
+}
+
+// ServiceMonitor is an opt-in Prometheus Operator ServiceMonitor that scrapes
+// the workload's Service. All fields default: Port "http", Path "/metrics",
+// Interval "30s".
+type ServiceMonitor struct {
+	Port     string // the Service port name to scrape
+	Path     string // the metrics path
+	Interval string // the scrape interval
 }
 
 func (s Service) ChartName() string {
@@ -271,6 +285,13 @@ func (s Service) Generate(ctx context.Context, dir, version string) (string, err
 
 	if s.Ingress != nil {
 		err = writeFile(chartDir, FILE_INGRESS, s.ingressYAML())
+		if err != nil {
+			return "", err
+		}
+	}
+
+	if s.ServiceMonitor != nil {
+		err = writeFile(chartDir, FILE_SERVICEMONITOR, s.serviceMonitorYAML())
 		if err != nil {
 			return "", err
 		}
