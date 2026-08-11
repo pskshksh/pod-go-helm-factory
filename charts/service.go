@@ -17,6 +17,7 @@ const (
 	FILE_NETWORKPOLICY  = "templates/networkpolicy.yaml"
 	FILE_PDB            = "templates/poddisruptionbudget.yaml"
 	FILE_HPA            = "templates/hpa.yaml"
+	FILE_INGRESS        = "templates/ingress.yaml"
 )
 
 // Workload selects the Kubernetes controller a Service chart generates.
@@ -93,8 +94,11 @@ type Service struct {
 	// Deployment's static replica count so the HPA owns it (nil = no HPA).
 	Autoscale *Autoscale
 
-	// More blocks come in later steps: Ingress, ServiceMonitor, and an Extra
-	// escape hatch. The struct will grow — that's expected.
+	// Ingress, when non-nil, exposes the Service externally (nil = no route).
+	Ingress *Ingress
+
+	// More blocks come in later steps: ServiceMonitor and an Extra escape hatch.
+	// The struct will grow — that's expected.
 }
 
 // NetworkPolicy is an opt-in default-deny NetworkPolicy for the workload. When
@@ -147,6 +151,36 @@ func (a Autoscale) validate() error {
 	return nil
 }
 
+// IngressMode selects which ingress mechanism the Ingress block generates.
+type IngressMode int
+
+const (
+	IngressNginx IngressMode = iota // networking.k8s.io/v1 Ingress, nginx class (default)
+	IngressEnvoy                    // Gateway API HTTPRoute (Envoy Gateway)
+)
+
+// Ingress is an opt-in external route to the workload's Service. In Nginx mode
+// it generates a networking.k8s.io/v1 Ingress (with optional TLS); in Envoy mode
+// a Gateway API HTTPRoute attached to the Gateway named by ClassName.
+type Ingress struct {
+	Mode      IngressMode
+	Host      string // required — the external hostname
+	Path      string // default "/"
+	ClassName string // Nginx: ingressClassName (default "nginx"). Envoy: parent Gateway name (required).
+	TLSSecret string // Nginx only: terminate TLS using this Secret.
+}
+
+// validate ensures a routable host and, for Envoy mode, a parent Gateway.
+func (i Ingress) validate() error {
+	if i.Host == "" {
+		return fmt.Errorf("charts: ingress: Host is required")
+	}
+	if i.Mode == IngressEnvoy && i.ClassName == "" {
+		return fmt.Errorf("charts: ingress: Envoy mode requires ClassName (the parent Gateway name)")
+	}
+	return nil
+}
+
 func (s Service) ChartName() string {
 	return s.Name
 }
@@ -168,6 +202,12 @@ func (s Service) Generate(ctx context.Context, dir, version string) (string, err
 	}
 	if s.Autoscale != nil {
 		err = s.Autoscale.validate()
+		if err != nil {
+			return "", err
+		}
+	}
+	if s.Ingress != nil {
+		err = s.Ingress.validate()
 		if err != nil {
 			return "", err
 		}
@@ -224,6 +264,13 @@ func (s Service) Generate(ctx context.Context, dir, version string) (string, err
 
 	if s.Autoscale != nil {
 		err = writeFile(chartDir, FILE_HPA, s.autoscaleYAML())
+		if err != nil {
+			return "", err
+		}
+	}
+
+	if s.Ingress != nil {
+		err = writeFile(chartDir, FILE_INGRESS, s.ingressYAML())
 		if err != nil {
 			return "", err
 		}

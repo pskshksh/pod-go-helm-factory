@@ -85,6 +85,7 @@ const (
 	API_NETWORKING_V1  = "networking.k8s.io/v1"
 	API_POLICY_V1      = "policy/v1"
 	API_AUTOSCALING_V2 = "autoscaling/v2"
+	API_GATEWAY_V1     = "gateway.networking.k8s.io/v1"
 
 	KIND_DEPLOYMENT     = "Deployment"
 	KIND_SERVICE        = "Service"
@@ -92,6 +93,8 @@ const (
 	KIND_NETWORKPOLICY  = "NetworkPolicy"
 	KIND_PDB            = "PodDisruptionBudget"
 	KIND_HPA            = "HorizontalPodAutoscaler"
+	KIND_INGRESS        = "Ingress"
+	KIND_HTTPROUTE      = "HTTPRoute"
 )
 
 // Repeated manifest literal values.
@@ -120,6 +123,12 @@ const (
 	RESOURCE_MEMORY         = "memory"
 	DEFAULT_MIN_REPLICAS    = 1
 	DEFAULT_CPU_UTILIZATION = 80
+
+	// Ingress.
+	DEFAULT_INGRESS_CLASS = "nginx"
+	DEFAULT_PATH          = "/"
+	PATH_TYPE_PREFIX      = "Prefix"     // networking.k8s.io Ingress
+	GATEWAY_PATH_PREFIX   = "PathPrefix" // Gateway API HTTPRoute
 )
 
 // YAML keys. Named so a key is written once and reused everywhere it appears,
@@ -207,6 +216,26 @@ const (
 	KEY_RESOURCE            = "resource"
 	KEY_TARGET              = "target"
 	KEY_AVERAGE_UTILIZATION = "averageUtilization"
+
+	// Ingress (networking.k8s.io Ingress).
+	KEY_INGRESS_CLASS_NAME = "ingressClassName"
+	KEY_RULES              = "rules"
+	KEY_HOST               = "host"
+	KEY_HTTP               = "http"
+	KEY_PATHS              = "paths"
+	KEY_PATH_TYPE          = "pathType"
+	KEY_BACKEND            = "backend"
+	KEY_SERVICE            = "service"
+	KEY_NUMBER             = "number"
+	KEY_TLS                = "tls"
+	KEY_HOSTS              = "hosts"
+	KEY_SECRET_NAME        = "secretName"
+
+	// Ingress (Gateway API HTTPRoute).
+	KEY_PARENT_REFS  = "parentRefs"
+	KEY_HOSTNAMES    = "hostnames"
+	KEY_MATCHES      = "matches"
+	KEY_BACKEND_REFS = "backendRefs"
 
 	// securityContext.
 	KEY_SECURITY_CONTEXT      = "securityContext"
@@ -310,6 +339,23 @@ func (a Autoscale) cpuTarget() int {
 		return a.TargetCPUUtilization
 	}
 	return DEFAULT_CPU_UTILIZATION
+}
+
+// path is the ingress route path, defaulting to DEFAULT_PATH.
+func (i Ingress) path() string {
+	if i.Path != "" {
+		return i.Path
+	}
+	return DEFAULT_PATH
+}
+
+// nginxClass is the ingressClassName in Nginx mode, defaulting to
+// DEFAULT_INGRESS_CLASS.
+func (i Ingress) nginxClass() string {
+	if i.ClassName != "" {
+		return i.ClassName
+	}
+	return DEFAULT_INGRESS_CLASS
 }
 
 // includeFullname returns the Helm include expression for the chart's fullname.
@@ -720,6 +766,84 @@ func (s Service) autoscaleYAML() string {
 	if a.TargetMemoryUtilization > 0 {
 		writeResourceMetric(&y, 2, RESOURCE_MEMORY, a.TargetMemoryUtilization)
 	}
+
+	return y.String()
+}
+
+// ingressYAML renders templates/ingress.yaml, dispatching on the ingress mode:
+// a networking.k8s.io Ingress (Nginx) or a Gateway API HTTPRoute (Envoy). Only
+// called when s.Ingress is non-nil (and validated).
+func (s Service) ingressYAML() string {
+	if s.Ingress.Mode == IngressEnvoy {
+		return s.httpRouteYAML()
+	}
+	return s.nginxIngressYAML()
+}
+
+// nginxIngressYAML renders a networking.k8s.io/v1 Ingress routing Host+Path to
+// this chart's Service, with optional TLS termination.
+func (s Service) nginxIngressYAML() string {
+	ing := s.Ingress
+	fullname := s.includeFullname()
+	var y render.YAML
+
+	y.Field(0, KEY_API_VERSION, API_NETWORKING_V1)
+	y.Field(0, KEY_KIND, KIND_INGRESS)
+	y.Line(0, KEY_METADATA+":")
+	y.Line(1, KEY_NAME+": "+fullname)
+	y.Line(1, KEY_LABELS+":")
+	y.Line(2, s.includeLabels(4))
+
+	y.Line(0, KEY_SPEC+":")
+	y.Field(1, KEY_INGRESS_CLASS_NAME, ing.nginxClass())
+	if ing.TLSSecret != "" {
+		y.Line(1, KEY_TLS+":")
+		y.Line(2, "- "+KEY_HOSTS+":")
+		y.Line(4, "- "+ing.Host)
+		y.Field(3, KEY_SECRET_NAME, ing.TLSSecret)
+	}
+	y.Line(1, KEY_RULES+":")
+	y.Line(2, "- "+KEY_HOST+": "+ing.Host)
+	y.Line(3, KEY_HTTP+":")
+	y.Line(4, KEY_PATHS+":")
+	y.Line(5, "- "+KEY_PATH+": "+ing.path())
+	y.Field(6, KEY_PATH_TYPE, PATH_TYPE_PREFIX)
+	y.Line(6, KEY_BACKEND+":")
+	y.Line(7, KEY_SERVICE+":")
+	y.Line(8, KEY_NAME+": "+fullname)
+	y.Line(8, KEY_PORT+":")
+	y.Line(9, KEY_NUMBER+": "+strconv.Itoa(DEFAULT_SERVICE_PORT))
+
+	return y.String()
+}
+
+// httpRouteYAML renders a Gateway API HTTPRoute attaching Host+Path to the
+// parent Gateway named by ClassName, forwarding to this chart's Service.
+func (s Service) httpRouteYAML() string {
+	ing := s.Ingress
+	fullname := s.includeFullname()
+	var y render.YAML
+
+	y.Field(0, KEY_API_VERSION, API_GATEWAY_V1)
+	y.Field(0, KEY_KIND, KIND_HTTPROUTE)
+	y.Line(0, KEY_METADATA+":")
+	y.Line(1, KEY_NAME+": "+fullname)
+	y.Line(1, KEY_LABELS+":")
+	y.Line(2, s.includeLabels(4))
+
+	y.Line(0, KEY_SPEC+":")
+	y.Line(1, KEY_PARENT_REFS+":")
+	y.Line(2, "- "+KEY_NAME+": "+ing.ClassName)
+	y.Line(1, KEY_HOSTNAMES+":")
+	y.Line(2, "- "+ing.Host)
+	y.Line(1, KEY_RULES+":")
+	y.Line(2, "- "+KEY_MATCHES+":")
+	y.Line(4, "- "+KEY_PATH+":")
+	y.Field(6, KEY_TYPE, GATEWAY_PATH_PREFIX)
+	y.Line(6, KEY_VALUE+": "+ing.path())
+	y.Line(3, KEY_BACKEND_REFS+":")
+	y.Line(4, "- "+KEY_NAME+": "+fullname)
+	y.Line(5, KEY_PORT+": "+strconv.Itoa(DEFAULT_SERVICE_PORT))
 
 	return y.String()
 }
