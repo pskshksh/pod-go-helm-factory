@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/pskshksh/pod-go-helm-factory/catalog"
+	"github.com/pskshksh/pod-go-helm-factory/charts"
 	"github.com/pskshksh/pod-go-helm-factory/deploy"
 	"github.com/pskshksh/pod-go-helm-factory/sdk/datastructures"
 )
@@ -19,9 +20,8 @@ import (
 const defaultChartVersion = "0.1.0"
 
 func main() {
-	namespaceFlag := flag.String("namespace", "", "target namespace (default: --env)")
-	env := flag.String("env", "", "environment: selects deploy/envs/<env> overlays and defaults the namespace")
-	release := flag.String("release", "sampleapp", "catalog service / release name")
+	env := flag.String("env", "", "environment: the namespace and overlay selector (required)")
+	release := flag.String("release", "", "deploy only this service (default: every service in the catalog)")
 	tag := flag.String("tag", "", "image tag (default: resolved git sha)")
 	version := flag.String("chart-version", defaultChartVersion, "chart version to stamp")
 	envsRoot := flag.String("envs-root", deploy.DefaultEnvsRoot, "root dir for env value overlays")
@@ -30,29 +30,25 @@ func main() {
 	flag.Var(&extraValues, "f", "extra values file, applied after env overlays (repeatable)")
 	flag.Parse()
 
-	namespace := *namespaceFlag
-	if namespace == "" {
-		namespace = *env
-	}
-	if namespace == "" {
-		log.Fatal("deploy: --namespace or --env is required")
+	if *env == "" {
+		log.Fatal("deploy: --env is required")
 	}
 
-	svc, ok := catalog.Find(*release)
-	if !ok {
-		log.Fatalf("deploy: no service %q in the catalog", *release)
+	services := catalog.Services()
+	if *release != "" {
+		svc, ok := catalog.Find(*release)
+		if !ok {
+			log.Fatalf("deploy: no service %q in the catalog", *release)
+		}
+		services = []charts.Generator{svc}
 	}
 
-	// Env overlays first (base then env/service), explicit -f files after them.
-	values := deploy.Overlays(*envsRoot, *env, svc.ChartName())
-	values = append(values, extraValues...)
-
-	rel := deploy.Release{
-		Service:      svc,
-		Namespace:    namespace,
+	environment := charts.Environment{Name: *env, Services: services}
+	opts := deploy.EnvOptions{
 		ChartVersion: *version,
 		ImageTag:     resolveTag(*tag),
-		Values:       values,
+		EnvsRoot:     *envsRoot,
+		ExtraValues:  extraValues,
 	}
 
 	ctx := context.Background()
@@ -60,9 +56,9 @@ func main() {
 
 	var err error
 	if *render {
-		err = d.Render(ctx, rel)
+		err = d.RenderAll(ctx, environment, opts)
 	} else {
-		err = d.Up(ctx, rel)
+		err = d.UpAll(ctx, environment, opts)
 	}
 	if err != nil {
 		log.Fatal(err)
