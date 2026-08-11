@@ -1,6 +1,17 @@
 package charts
 
+import (
+	"context"
+	"fmt"
+)
+
 type O = map[string]string
+
+const (
+	FILE_CHART_YAML  = "Chart.yaml"
+	FILE_VALUES_YAML = "values.yaml"
+	FILE_HELPERS_TPL = "templates/_helpers.tpl"
+)
 
 // Workload selects the Kubernetes controller a Service chart generates.
 // The zero value is Deployment — the most common case — so a descriptor that
@@ -68,4 +79,41 @@ type Service struct {
 	// Blocks come in later steps: Ingress, Autoscale, PodDisruptionBudget,
 	// NetworkPolicy, ServiceMonitor, and an Extra escape hatch. The struct
 	// will grow — that's expected.
+}
+
+func (s Service) ChartName() string {
+	return s.Name
+}
+
+func (s Service) Generate(ctx context.Context, dir, version string) (string, error) {
+	name := s.Name
+	err := validateName(name)
+	if err != nil {
+		return "", err
+	}
+	if version == "" {
+		return "", fmt.Errorf("charts: '%s': version is required", name)
+	}
+
+	chartDir, err := createChartDir(dir, name)
+	if err != nil {
+		return "", fmt.Errorf("charts: %s: create dirs: %w", name, err)
+	}
+
+	err = writeFile(chartDir, FILE_CHART_YAML, s.chartYAML(version))
+	if err != nil {
+		return "", err
+	}
+
+	err = writeFile(chartDir, FILE_VALUES_YAML, s.valuesYAML())
+	if err != nil {
+		return "", err
+	}
+
+	err = writeFile(chartDir, FILE_HELPERS_TPL, s.helpersTPL())
+	if err != nil {
+		return "", err
+	}
+
+	return chartDir, nil
 }
