@@ -12,11 +12,17 @@ const (
 	FILE_VALUES_YAML    = "values.yaml"
 	FILE_HELPERS_TPL    = "templates/_helpers.tpl"
 	FILE_DEPLOYMENT     = "templates/deployment.yaml"
+	FILE_STATEFULSET    = "templates/statefulset.yaml"
+	FILE_DAEMONSET      = "templates/daemonset.yaml"
+	FILE_JOB            = "templates/job.yaml"
+	FILE_CRONJOB        = "templates/cronjob.yaml"
 	FILE_SERVICE        = "templates/service.yaml"
 	FILE_SERVICEACCOUNT = "templates/serviceaccount.yaml"
 	FILE_NETWORKPOLICY  = "templates/networkpolicy.yaml"
 	FILE_PDB            = "templates/poddisruptionbudget.yaml"
 	FILE_HPA            = "templates/hpa.yaml"
+	FILE_INGRESS        = "templates/ingress.yaml"
+	FILE_SERVICEMONITOR = "templates/servicemonitor.yaml"
 )
 
 // Workload selects the Kubernetes controller a Service chart generates.
@@ -93,8 +99,15 @@ type Service struct {
 	// Deployment's static replica count so the HPA owns it (nil = no HPA).
 	Autoscale *Autoscale
 
-	// More blocks come in later steps: Ingress, ServiceMonitor, and an Extra
-	// escape hatch. The struct will grow — that's expected.
+	// Ingress, when non-nil, exposes the Service externally (nil = no route).
+	Ingress *Ingress
+
+	// ServiceMonitor, when non-nil, generates a Prometheus Operator
+	// ServiceMonitor scraping the Service (nil = no ServiceMonitor).
+	ServiceMonitor *ServiceMonitor
+
+	// An Extra escape hatch comes in a later step. The struct will grow — that's
+	// expected.
 }
 
 // NetworkPolicy is an opt-in default-deny NetworkPolicy for the workload. When
@@ -147,6 +160,45 @@ func (a Autoscale) validate() error {
 	return nil
 }
 
+// IngressMode selects which ingress mechanism the Ingress block generates.
+type IngressMode int
+
+const (
+	IngressNginx IngressMode = iota // networking.k8s.io/v1 Ingress, nginx class (default)
+	IngressEnvoy                    // Gateway API HTTPRoute (Envoy Gateway)
+)
+
+// Ingress is an opt-in external route to the workload's Service. In Nginx mode
+// it generates a networking.k8s.io/v1 Ingress (with optional TLS); in Envoy mode
+// a Gateway API HTTPRoute attached to the Gateway named by ClassName.
+type Ingress struct {
+	Mode      IngressMode
+	Host      string // required — the external hostname
+	Path      string // default "/"
+	ClassName string // Nginx: ingressClassName (default "nginx"). Envoy: parent Gateway name (required).
+	TLSSecret string // Nginx only: terminate TLS using this Secret.
+}
+
+// validate ensures a routable host and, for Envoy mode, a parent Gateway.
+func (i Ingress) validate() error {
+	if i.Host == "" {
+		return fmt.Errorf("charts: ingress: Host is required")
+	}
+	if i.Mode == IngressEnvoy && i.ClassName == "" {
+		return fmt.Errorf("charts: ingress: Envoy mode requires ClassName (the parent Gateway name)")
+	}
+	return nil
+}
+
+// ServiceMonitor is an opt-in Prometheus Operator ServiceMonitor that scrapes
+// the workload's Service. All fields default: Port "http", Path "/metrics",
+// Interval "30s".
+type ServiceMonitor struct {
+	Port     string // the Service port name to scrape
+	Path     string // the metrics path
+	Interval string // the scrape interval
+}
+
 func (s Service) ChartName() string {
 	return s.Name
 }
@@ -160,6 +212,9 @@ func (s Service) Generate(ctx context.Context, dir, version string) (string, err
 	if version == "" {
 		return "", fmt.Errorf("charts: '%s': version is required", name)
 	}
+	if s.Kind == CronJob && s.Schedule == "" {
+		return "", fmt.Errorf("charts: '%s': CronJob requires Schedule", name)
+	}
 	if s.PodDisruptionBudget != nil {
 		err = s.PodDisruptionBudget.validate()
 		if err != nil {
@@ -168,6 +223,12 @@ func (s Service) Generate(ctx context.Context, dir, version string) (string, err
 	}
 	if s.Autoscale != nil {
 		err = s.Autoscale.validate()
+		if err != nil {
+			return "", err
+		}
+	}
+	if s.Ingress != nil {
+		err = s.Ingress.validate()
 		if err != nil {
 			return "", err
 		}
@@ -193,7 +254,7 @@ func (s Service) Generate(ctx context.Context, dir, version string) (string, err
 		return "", err
 	}
 
-	err = writeFile(chartDir, FILE_DEPLOYMENT, s.deploymentYAML())
+	err = writeFile(chartDir, s.workloadFile(), s.workloadYAML())
 	if err != nil {
 		return "", err
 	}
@@ -224,6 +285,20 @@ func (s Service) Generate(ctx context.Context, dir, version string) (string, err
 
 	if s.Autoscale != nil {
 		err = writeFile(chartDir, FILE_HPA, s.autoscaleYAML())
+		if err != nil {
+			return "", err
+		}
+	}
+
+	if s.Ingress != nil {
+		err = writeFile(chartDir, FILE_INGRESS, s.ingressYAML())
+		if err != nil {
+			return "", err
+		}
+	}
+
+	if s.ServiceMonitor != nil {
+		err = writeFile(chartDir, FILE_SERVICEMONITOR, s.serviceMonitorYAML())
 		if err != nil {
 			return "", err
 		}

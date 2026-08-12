@@ -65,6 +65,36 @@ func assertRender(t *testing.T, got, want string) {
 	}
 }
 
+// fragmentsDir holds golden files for individual renderers (a single resource or
+// block), kept separate from the whole-chart bundles directly under snapshots/.
+const fragmentsDir = "snapshots/fragments"
+
+// assertFragment compares a rendered fragment against fragmentsDir/<name>,
+// rewriting it under -update. It is the file-backed counterpart to assertRender
+// for renderers whose expected output is large enough to read better as its own
+// golden file than as an inline string literal.
+func assertFragment(t *testing.T, got, name string) {
+	t.Helper()
+	path := filepath.Join(fragmentsDir, name)
+
+	if *updateSnapshots {
+		err := writeFile(fragmentsDir, name, got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("updated fragment %s", path)
+		return
+	}
+
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read fragment %s (create it with -update): %v", path, err)
+	}
+	if got != string(want) {
+		t.Errorf("fragment %s mismatch:\n--- got ---\n%s\n--- want ---\n%s", path, got, string(want))
+	}
+}
+
 // bundleChart writes every file in the generated chart directory into a single
 // deterministic YAML blob at dst, each file introduced by a "# file: <path>"
 // header. Files are sorted so output is stable regardless of walk order.

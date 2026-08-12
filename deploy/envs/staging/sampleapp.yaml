@@ -1,0 +1,6 @@
+# sampleapp in staging: a single replica is plenty.
+replicaCount: 1
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi

@@ -62,6 +62,12 @@ func (y *YAML) Bool(indent int, key string, value bool) {
 	y.Line(indent, key+": "+strconv.FormatBool(value))
 }
 
+// Item writes a sequence element "- value" at the given indent, quoting value
+// only when a plain scalar would be misparsed (e.g. a leading '-' or a colon).
+func (y *YAML) Item(indent int, value string) {
+	y.Line(indent, "- "+scalar(value))
+}
+
 // Line writes s at the given indent level (2 spaces per level).
 func (y *YAML) Line(indent int, s string) {
 	y.b.WriteString(strings.Repeat("  ", indent))

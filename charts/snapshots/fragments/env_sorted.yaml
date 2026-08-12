@@ -1,0 +1,5 @@
+env:
+  - name: A_KEY
+    value: "1"
+  - name: B_KEY
+    value: "2"

@@ -1,0 +1,4 @@
+# Values shared across every environment. Only override what differs from the
+# chart's baked defaults; anything omitted falls through to those defaults.
+podAnnotations:
+  app.kubernetes.io/part-of: pod-go-helm-factory

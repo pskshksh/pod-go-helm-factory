@@ -38,6 +38,9 @@ const (
 	STRATEGY_ROLLING  = "RollingUpdate"
 	STRATEGY_RECREATE = "Recreate"
 
+	// Batch pod restart policy (Job / CronJob). Always is invalid for these.
+	RESTART_POLICY_NEVER = "Never"
+
 	// _helpers.tpl substitution placeholders
 	PLACEHOLDER_NAME     = "NAME"
 	PLACEHOLDER_SELECTOR = "SELECTOR"
@@ -85,13 +88,23 @@ const (
 	API_NETWORKING_V1  = "networking.k8s.io/v1"
 	API_POLICY_V1      = "policy/v1"
 	API_AUTOSCALING_V2 = "autoscaling/v2"
+	API_GATEWAY_V1     = "gateway.networking.k8s.io/v1"
+	API_MONITORING_V1  = "monitoring.coreos.com/v1"
+	API_BATCH_V1       = "batch/v1"
 
 	KIND_DEPLOYMENT     = "Deployment"
+	KIND_STATEFULSET    = "StatefulSet"
+	KIND_DAEMONSET      = "DaemonSet"
+	KIND_JOB            = "Job"
+	KIND_CRONJOB        = "CronJob"
 	KIND_SERVICE        = "Service"
 	KIND_SERVICEACCOUNT = "ServiceAccount"
 	KIND_NETWORKPOLICY  = "NetworkPolicy"
 	KIND_PDB            = "PodDisruptionBudget"
 	KIND_HPA            = "HorizontalPodAutoscaler"
+	KIND_INGRESS        = "Ingress"
+	KIND_HTTPROUTE      = "HTTPRoute"
+	KIND_SERVICEMONITOR = "ServiceMonitor"
 )
 
 // Repeated manifest literal values.
@@ -120,6 +133,16 @@ const (
 	RESOURCE_MEMORY         = "memory"
 	DEFAULT_MIN_REPLICAS    = 1
 	DEFAULT_CPU_UTILIZATION = 80
+
+	// Ingress.
+	DEFAULT_INGRESS_CLASS = "nginx"
+	DEFAULT_PATH          = "/"
+	PATH_TYPE_PREFIX      = "Prefix"     // networking.k8s.io Ingress
+	GATEWAY_PATH_PREFIX   = "PathPrefix" // Gateway API HTTPRoute
+
+	// ServiceMonitor.
+	DEFAULT_METRICS_PATH    = "/metrics"
+	DEFAULT_SCRAPE_INTERVAL = "30s"
 )
 
 // YAML keys. Named so a key is written once and reused everywhere it appears,
@@ -152,10 +175,14 @@ const (
 	KEY_TOLERATIONS        = "tolerations"
 	KEY_AFFINITY           = "affinity"
 
-	// Deployment / pod spec.
+	// Workload / pod spec.
 	KEY_SPEC               = "spec"
 	KEY_REPLICAS           = "replicas"
 	KEY_STRATEGY           = "strategy"
+	KEY_SERVICE_NAME       = "serviceName"   // StatefulSet
+	KEY_SCHEDULE           = "schedule"      // CronJob
+	KEY_JOB_TEMPLATE       = "jobTemplate"   // CronJob
+	KEY_RESTART_POLICY     = "restartPolicy" // Job / CronJob
 	KEY_TYPE               = "type"
 	KEY_SELECTOR           = "selector"
 	KEY_MATCH_LABELS       = "matchLabels"
@@ -169,6 +196,10 @@ const (
 	KEY_EMPTY_DIR          = "emptyDir"
 
 	// Container.
+	KEY_COMMAND         = "command"
+	KEY_ARGS            = "args"
+	KEY_SECRET          = "secret"
+	KEY_READ_ONLY       = "readOnly"
 	KEY_ENV             = "env"
 	KEY_VALUE           = "value"
 	KEY_ENV_FROM        = "envFrom"
@@ -207,6 +238,30 @@ const (
 	KEY_RESOURCE            = "resource"
 	KEY_TARGET              = "target"
 	KEY_AVERAGE_UTILIZATION = "averageUtilization"
+
+	// Ingress (networking.k8s.io Ingress).
+	KEY_INGRESS_CLASS_NAME = "ingressClassName"
+	KEY_RULES              = "rules"
+	KEY_HOST               = "host"
+	KEY_HTTP               = "http"
+	KEY_PATHS              = "paths"
+	KEY_PATH_TYPE          = "pathType"
+	KEY_BACKEND            = "backend"
+	KEY_SERVICE            = "service"
+	KEY_NUMBER             = "number"
+	KEY_TLS                = "tls"
+	KEY_HOSTS              = "hosts"
+	KEY_SECRET_NAME        = "secretName"
+
+	// Ingress (Gateway API HTTPRoute).
+	KEY_PARENT_REFS  = "parentRefs"
+	KEY_HOSTNAMES    = "hostnames"
+	KEY_MATCHES      = "matches"
+	KEY_BACKEND_REFS = "backendRefs"
+
+	// ServiceMonitor.
+	KEY_ENDPOINTS = "endpoints"
+	KEY_INTERVAL  = "interval"
 
 	// securityContext.
 	KEY_SECURITY_CONTEXT      = "securityContext"
@@ -310,6 +365,23 @@ func (a Autoscale) cpuTarget() int {
 		return a.TargetCPUUtilization
 	}
 	return DEFAULT_CPU_UTILIZATION
+}
+
+// path is the ingress route path, defaulting to DEFAULT_PATH.
+func (i Ingress) path() string {
+	if i.Path != "" {
+		return i.Path
+	}
+	return DEFAULT_PATH
+}
+
+// nginxClass is the ingressClassName in Nginx mode, defaulting to
+// DEFAULT_INGRESS_CLASS.
+func (i Ingress) nginxClass() string {
+	if i.ClassName != "" {
+		return i.ClassName
+	}
+	return DEFAULT_INGRESS_CLASS
 }
 
 // includeFullname returns the Helm include expression for the chart's fullname.
@@ -435,6 +507,79 @@ func (s Service) writeContainerSecurityContext(y *render.YAML, indent int) {
 	y.Field(indent+2, KEY_TYPE, SECCOMP_RUNTIME_DEFAULT)
 }
 
+// writeCommand emits the container command (ENTRYPOINT override). Nothing is
+// written when it is empty.
+func (s Service) writeCommand(y *render.YAML, indent int) {
+	if len(s.Container.Command) == 0 {
+		return
+	}
+	y.Line(indent, KEY_COMMAND+":")
+	for _, c := range s.Container.Command {
+		y.Item(indent+1, c)
+	}
+}
+
+// writeArgs emits the container args (CMD override). Nothing is written when it
+// is empty.
+func (s Service) writeArgs(y *render.YAML, indent int) {
+	if len(s.Container.Args) == 0 {
+		return
+	}
+	y.Line(indent, KEY_ARGS+":")
+	for _, a := range s.Container.Args {
+		y.Item(indent+1, a)
+	}
+}
+
+// writeVolumeMounts emits the container's volumeMounts: the writable /tmp scratch
+// dir (present whenever the root filesystem is read-only) followed by any custom
+// mounts. Nothing is written when neither applies.
+func (s Service) writeVolumeMounts(y *render.YAML, indent int) {
+	readOnlyRoot := s.readOnlyRootFilesystem()
+	if !readOnlyRoot && len(s.Container.Volumes) == 0 {
+		return
+	}
+
+	y.Line(indent, KEY_VOLUME_MOUNTS+":")
+	if readOnlyRoot {
+		y.Line(indent+1, "- "+KEY_NAME+": "+TMP_VOLUME_NAME)
+		y.Field(indent+2, KEY_MOUNT_PATH, TMP_MOUNT_PATH)
+	}
+	for _, v := range s.Container.Volumes {
+		y.Line(indent+1, "- "+KEY_NAME+": "+v.Name)
+		y.Field(indent+2, KEY_MOUNT_PATH, v.MountPath)
+		if v.ReadOnly {
+			y.Bool(indent+2, KEY_READ_ONLY, true)
+		}
+	}
+}
+
+// writeVolumes emits the pod's volumes matching writeVolumeMounts: the /tmp
+// emptyDir (when the root filesystem is read-only) and any custom volumes, each
+// a Secret when Volume.Secret is set, otherwise an emptyDir. Nothing is written
+// when neither applies.
+func (s Service) writeVolumes(y *render.YAML, indent int) {
+	readOnlyRoot := s.readOnlyRootFilesystem()
+	if !readOnlyRoot && len(s.Container.Volumes) == 0 {
+		return
+	}
+
+	y.Line(indent, KEY_VOLUMES+":")
+	if readOnlyRoot {
+		y.Line(indent+1, "- "+KEY_NAME+": "+TMP_VOLUME_NAME)
+		y.Line(indent+2, KEY_EMPTY_DIR+": {}")
+	}
+	for _, v := range s.Container.Volumes {
+		y.Line(indent+1, "- "+KEY_NAME+": "+v.Name)
+		if v.Secret != "" {
+			y.Line(indent+2, KEY_SECRET+":")
+			y.Field(indent+3, KEY_SECRET_NAME, v.Secret)
+		} else {
+			y.Line(indent+2, KEY_EMPTY_DIR+": {}")
+		}
+	}
+}
+
 // writeEnv emits the container's literal environment variables into y, sorted by
 // key for deterministic output. Nothing is written when there are none.
 func (s Service) writeEnv(y *render.YAML, indent int) {
@@ -474,20 +619,144 @@ func (s Service) writeEnvFrom(y *render.YAML, indent int) {
 	}
 }
 
-// deploymentYAML renders templates/deployment.yaml. The manifest structure,
-// labels, and securityContext are baked here; per-environment scalars
-// (replicas, image, resources, scheduling) stay as .Values references Helm
-// fills in at install time. Only the zero-value Kind (Deployment) is emitted
-// today; other workload kinds come in a later step.
-func (s Service) deploymentYAML() string {
-	var y render.YAML
+// workloadYAML renders the workload resource for the descriptor's Kind. The pod
+// template is shared across kinds (writePodTemplate); only the enclosing spec
+// differs. The zero value (Deployment) is the default.
+func (s Service) workloadYAML() string {
+	switch s.Kind {
+	case StatefulSet:
+		return s.statefulSetYAML()
+	case DaemonSet:
+		return s.daemonSetYAML()
+	case Job:
+		return s.jobYAML()
+	case CronJob:
+		return s.cronJobYAML()
+	default:
+		return s.deploymentYAML()
+	}
+}
 
-	y.Field(0, KEY_API_VERSION, API_APPS_V1)
-	y.Field(0, KEY_KIND, KIND_DEPLOYMENT)
+// workloadFile is the template filename for the descriptor's Kind.
+func (s Service) workloadFile() string {
+	switch s.Kind {
+	case StatefulSet:
+		return FILE_STATEFULSET
+	case DaemonSet:
+		return FILE_DAEMONSET
+	case Job:
+		return FILE_JOB
+	case CronJob:
+		return FILE_CRONJOB
+	default:
+		return FILE_DEPLOYMENT
+	}
+}
+
+// workloadKind and workloadAPIVersion identify the workload resource, e.g. so an
+// HPA's scaleTargetRef points at the right kind.
+func (s Service) workloadKind() string {
+	switch s.Kind {
+	case StatefulSet:
+		return KIND_STATEFULSET
+	case DaemonSet:
+		return KIND_DAEMONSET
+	case Job:
+		return KIND_JOB
+	case CronJob:
+		return KIND_CRONJOB
+	default:
+		return KIND_DEPLOYMENT
+	}
+}
+
+func (s Service) workloadAPIVersion() string {
+	if s.Kind == Job || s.Kind == CronJob {
+		return API_BATCH_V1
+	}
+	return API_APPS_V1
+}
+
+// writeObjectMeta emits the shared metadata block (name + labels) for a workload
+// resource at the top level.
+func (s Service) writeObjectMeta(y *render.YAML) {
 	y.Line(0, KEY_METADATA+":")
 	y.Line(1, KEY_NAME+": "+s.includeFullname())
 	y.Line(1, KEY_LABELS+":")
 	y.Line(2, s.includeLabels(4))
+}
+
+// writeSelector emits a label selector (selector.matchLabels) at the given
+// indent, reusing the chart's selectorLabels helper.
+func (s Service) writeSelector(y *render.YAML, si int) {
+	y.Line(si, KEY_SELECTOR+":")
+	y.Line(si+1, KEY_MATCH_LABELS+":")
+	y.Line(si+2, s.includeSelectorLabels((si+2)*2))
+}
+
+// writePodTemplate emits the pod template — shared by every workload kind — with
+// the "template:" key at indent ti. All inner indents (and Helm nindent values)
+// are derived from ti, so the same template renders correctly whether it sits
+// directly under a Deployment spec (ti=1) or nested under a CronJob's
+// jobTemplate.spec (ti=3). Job and CronJob pods get restartPolicy: Never, which
+// the controllers require (Always is invalid for them).
+func (s Service) writePodTemplate(y *render.YAML, ti int) {
+	y.Line(ti, KEY_TEMPLATE+":")
+	y.Line(ti+1, KEY_METADATA+":")
+	y.Line(ti+2, KEY_LABELS+":")
+	y.Line(ti+3, s.includeSelectorLabels((ti+3)*2))
+	writeValuesBlock(y, ti+2, KEY_POD_ANNOTATIONS, KEY_ANNOTATIONS)
+
+	y.Line(ti+1, KEY_SPEC+":")
+	y.Line(ti+2, KEY_SERVICE_ACCOUNT+": "+s.includeFullname())
+	y.Bool(ti+2, KEY_AUTOMOUNT_SA_TOKEN, s.automountSAToken())
+	writeValuesBlock(y, ti+2, KEY_IMAGE_PULL_SECRETS, KEY_IMAGE_PULL_SECRETS)
+	s.writePodSecurityContext(y, ti+2)
+	if s.Kind == Job || s.Kind == CronJob {
+		y.Field(ti+2, KEY_RESTART_POLICY, RESTART_POLICY_NEVER)
+	}
+
+	cf := ti + 4 // container field indent
+	y.Line(ti+2, KEY_CONTAINERS+":")
+	y.Line(ti+3, "- "+KEY_NAME+": "+s.Name)
+	y.Line(cf, KEY_IMAGE+`: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"`)
+	y.Line(cf, KEY_IMAGE_PULL_POLICY+": {{ .Values.image.pullPolicy }}")
+	s.writeCommand(y, cf)
+	s.writeArgs(y, cf)
+	s.writeEnv(y, cf)
+	s.writeEnvFrom(y, cf)
+	y.Line(cf, KEY_PORTS+":")
+	y.Line(cf+1, "- "+KEY_NAME+": "+PORT_NAME_HTTP)
+	y.Line(cf+2, KEY_CONTAINER_PORT+": "+strconv.Itoa(s.containerPort()))
+	y.Field(cf+2, KEY_PROTOCOL, PROTOCOL_TCP)
+	y.Line(cf, KEY_LIVENESS_PROBE+":")
+	y.Line(cf+1, KEY_HTTP_GET+":")
+	y.Field(cf+2, KEY_PATH, s.livenessPath())
+	y.Field(cf+2, KEY_PORT, PORT_NAME_HTTP)
+	y.Line(cf, KEY_READINESS_PROBE+":")
+	y.Line(cf+1, KEY_HTTP_GET+":")
+	y.Field(cf+2, KEY_PATH, s.readinessPath())
+	y.Field(cf+2, KEY_PORT, PORT_NAME_HTTP)
+	y.Line(cf, KEY_RESOURCES+":")
+	y.Line(cf+1, "{{- toYaml .Values."+KEY_RESOURCES+" | nindent "+strconv.Itoa((cf+1)*2)+" }}")
+	s.writeContainerSecurityContext(y, cf)
+	s.writeVolumeMounts(y, cf)
+
+	s.writeVolumes(y, ti+2)
+
+	writeValuesBlock(y, ti+2, KEY_NODE_SELECTOR, KEY_NODE_SELECTOR)
+	writeValuesBlock(y, ti+2, KEY_AFFINITY, KEY_AFFINITY)
+	writeValuesBlock(y, ti+2, KEY_TOLERATIONS, KEY_TOLERATIONS)
+}
+
+// deploymentYAML renders templates/deployment.yaml — a rolling-update Deployment.
+// Manifest structure, labels, and securityContext are baked; per-environment
+// scalars (replicas, image, resources, scheduling) stay as .Values references.
+func (s Service) deploymentYAML() string {
+	var y render.YAML
+	y.Field(0, KEY_API_VERSION, API_APPS_V1)
+	y.Field(0, KEY_KIND, KIND_DEPLOYMENT)
+	s.writeObjectMeta(&y)
 
 	y.Line(0, KEY_SPEC+":")
 	// With an HPA the autoscaler owns the replica count, so a static replicas
@@ -497,60 +766,72 @@ func (s Service) deploymentYAML() string {
 	}
 	y.Line(1, KEY_STRATEGY+":")
 	y.Field(2, KEY_TYPE, s.strategyType())
-	y.Line(1, KEY_SELECTOR+":")
-	y.Line(2, KEY_MATCH_LABELS+":")
-	y.Line(3, s.includeSelectorLabels(6))
+	s.writeSelector(&y, 1)
+	s.writePodTemplate(&y, 1)
 
-	y.Line(1, KEY_TEMPLATE+":")
-	y.Line(2, KEY_METADATA+":")
-	y.Line(3, KEY_LABELS+":")
-	y.Line(4, s.includeSelectorLabels(8))
-	writeValuesBlock(&y, 3, KEY_POD_ANNOTATIONS, KEY_ANNOTATIONS)
+	return y.String()
+}
 
+// statefulSetYAML renders templates/statefulset.yaml — a StatefulSet with stable
+// identity. serviceName points at the chart's Service for stable DNS.
+func (s Service) statefulSetYAML() string {
+	var y render.YAML
+	y.Field(0, KEY_API_VERSION, API_APPS_V1)
+	y.Field(0, KEY_KIND, KIND_STATEFULSET)
+	s.writeObjectMeta(&y)
+
+	y.Line(0, KEY_SPEC+":")
+	if s.Autoscale == nil {
+		y.Line(1, KEY_REPLICAS+": {{ .Values.replicaCount }}")
+	}
+	y.Line(1, KEY_SERVICE_NAME+": "+s.includeFullname())
+	s.writeSelector(&y, 1)
+	s.writePodTemplate(&y, 1)
+
+	return y.String()
+}
+
+// daemonSetYAML renders templates/daemonset.yaml — one pod per node (no replicas).
+func (s Service) daemonSetYAML() string {
+	var y render.YAML
+	y.Field(0, KEY_API_VERSION, API_APPS_V1)
+	y.Field(0, KEY_KIND, KIND_DAEMONSET)
+	s.writeObjectMeta(&y)
+
+	y.Line(0, KEY_SPEC+":")
+	s.writeSelector(&y, 1)
+	s.writePodTemplate(&y, 1)
+
+	return y.String()
+}
+
+// jobYAML renders templates/job.yaml — a one-shot Job. The controller manages the
+// selector, so only the pod template is emitted.
+func (s Service) jobYAML() string {
+	var y render.YAML
+	y.Field(0, KEY_API_VERSION, API_BATCH_V1)
+	y.Field(0, KEY_KIND, KIND_JOB)
+	s.writeObjectMeta(&y)
+
+	y.Line(0, KEY_SPEC+":")
+	s.writePodTemplate(&y, 1)
+
+	return y.String()
+}
+
+// cronJobYAML renders templates/cronjob.yaml — a scheduled Job. The pod template
+// nests under jobTemplate.spec, so it is emitted at indent 3.
+func (s Service) cronJobYAML() string {
+	var y render.YAML
+	y.Field(0, KEY_API_VERSION, API_BATCH_V1)
+	y.Field(0, KEY_KIND, KIND_CRONJOB)
+	s.writeObjectMeta(&y)
+
+	y.Line(0, KEY_SPEC+":")
+	y.Field(1, KEY_SCHEDULE, s.Schedule)
+	y.Line(1, KEY_JOB_TEMPLATE+":")
 	y.Line(2, KEY_SPEC+":")
-	y.Line(3, KEY_SERVICE_ACCOUNT+": "+s.includeFullname())
-	y.Bool(3, KEY_AUTOMOUNT_SA_TOKEN, s.automountSAToken())
-	writeValuesBlock(&y, 3, KEY_IMAGE_PULL_SECRETS, KEY_IMAGE_PULL_SECRETS)
-	s.writePodSecurityContext(&y, 3)
-
-	y.Line(3, KEY_CONTAINERS+":")
-	y.Line(4, "- "+KEY_NAME+": "+s.Name)
-	y.Line(5, KEY_IMAGE+`: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"`)
-	y.Line(5, KEY_IMAGE_PULL_POLICY+": {{ .Values.image.pullPolicy }}")
-	s.writeEnv(&y, 5)
-	s.writeEnvFrom(&y, 5)
-	y.Line(5, KEY_PORTS+":")
-	y.Line(6, "- "+KEY_NAME+": "+PORT_NAME_HTTP)
-	y.Line(7, KEY_CONTAINER_PORT+": "+strconv.Itoa(s.containerPort()))
-	y.Field(7, KEY_PROTOCOL, PROTOCOL_TCP)
-	y.Line(5, KEY_LIVENESS_PROBE+":")
-	y.Line(6, KEY_HTTP_GET+":")
-	y.Field(7, KEY_PATH, s.livenessPath())
-	y.Field(7, KEY_PORT, PORT_NAME_HTTP)
-	y.Line(5, KEY_READINESS_PROBE+":")
-	y.Line(6, KEY_HTTP_GET+":")
-	y.Field(7, KEY_PATH, s.readinessPath())
-	y.Field(7, KEY_PORT, PORT_NAME_HTTP)
-	y.Line(5, KEY_RESOURCES+":")
-	y.Line(6, "{{- toYaml .Values."+KEY_RESOURCES+" | nindent 12 }}")
-	s.writeContainerSecurityContext(&y, 5)
-
-	// A read-only root filesystem needs a writable scratch dir for /tmp.
-	if s.readOnlyRootFilesystem() {
-		y.Line(5, KEY_VOLUME_MOUNTS+":")
-		y.Line(6, "- "+KEY_NAME+": "+TMP_VOLUME_NAME)
-		y.Field(7, KEY_MOUNT_PATH, TMP_MOUNT_PATH)
-	}
-
-	if s.readOnlyRootFilesystem() {
-		y.Line(3, KEY_VOLUMES+":")
-		y.Line(4, "- "+KEY_NAME+": "+TMP_VOLUME_NAME)
-		y.Line(5, KEY_EMPTY_DIR+": {}")
-	}
-
-	writeValuesBlock(&y, 3, KEY_NODE_SELECTOR, KEY_NODE_SELECTOR)
-	writeValuesBlock(&y, 3, KEY_AFFINITY, KEY_AFFINITY)
-	writeValuesBlock(&y, 3, KEY_TOLERATIONS, KEY_TOLERATIONS)
+	s.writePodTemplate(&y, 3)
 
 	return y.String()
 }
@@ -710,8 +991,8 @@ func (s Service) autoscaleYAML() string {
 
 	y.Line(0, KEY_SPEC+":")
 	y.Line(1, KEY_SCALE_TARGET_REF+":")
-	y.Field(2, KEY_API_VERSION, API_APPS_V1)
-	y.Field(2, KEY_KIND, KIND_DEPLOYMENT)
+	y.Field(2, KEY_API_VERSION, s.workloadAPIVersion())
+	y.Field(2, KEY_KIND, s.workloadKind())
 	y.Line(2, KEY_NAME+": "+fullname)
 	y.Line(1, KEY_MIN_REPLICAS+": "+strconv.Itoa(a.minReplicas()))
 	y.Line(1, KEY_MAX_REPLICAS+": "+strconv.Itoa(a.MaxReplicas))
@@ -720,6 +1001,137 @@ func (s Service) autoscaleYAML() string {
 	if a.TargetMemoryUtilization > 0 {
 		writeResourceMetric(&y, 2, RESOURCE_MEMORY, a.TargetMemoryUtilization)
 	}
+
+	return y.String()
+}
+
+// ingressYAML renders templates/ingress.yaml, dispatching on the ingress mode:
+// a networking.k8s.io Ingress (Nginx) or a Gateway API HTTPRoute (Envoy). Only
+// called when s.Ingress is non-nil (and validated).
+func (s Service) ingressYAML() string {
+	if s.Ingress.Mode == IngressEnvoy {
+		return s.httpRouteYAML()
+	}
+	return s.nginxIngressYAML()
+}
+
+// nginxIngressYAML renders a networking.k8s.io/v1 Ingress routing Host+Path to
+// this chart's Service, with optional TLS termination.
+func (s Service) nginxIngressYAML() string {
+	ing := s.Ingress
+	fullname := s.includeFullname()
+	var y render.YAML
+
+	y.Field(0, KEY_API_VERSION, API_NETWORKING_V1)
+	y.Field(0, KEY_KIND, KIND_INGRESS)
+	y.Line(0, KEY_METADATA+":")
+	y.Line(1, KEY_NAME+": "+fullname)
+	y.Line(1, KEY_LABELS+":")
+	y.Line(2, s.includeLabels(4))
+
+	y.Line(0, KEY_SPEC+":")
+	y.Field(1, KEY_INGRESS_CLASS_NAME, ing.nginxClass())
+	if ing.TLSSecret != "" {
+		y.Line(1, KEY_TLS+":")
+		y.Line(2, "- "+KEY_HOSTS+":")
+		y.Line(4, "- "+ing.Host)
+		y.Field(3, KEY_SECRET_NAME, ing.TLSSecret)
+	}
+	y.Line(1, KEY_RULES+":")
+	y.Line(2, "- "+KEY_HOST+": "+ing.Host)
+	y.Line(3, KEY_HTTP+":")
+	y.Line(4, KEY_PATHS+":")
+	y.Line(5, "- "+KEY_PATH+": "+ing.path())
+	y.Field(6, KEY_PATH_TYPE, PATH_TYPE_PREFIX)
+	y.Line(6, KEY_BACKEND+":")
+	y.Line(7, KEY_SERVICE+":")
+	y.Line(8, KEY_NAME+": "+fullname)
+	y.Line(8, KEY_PORT+":")
+	y.Line(9, KEY_NUMBER+": "+strconv.Itoa(DEFAULT_SERVICE_PORT))
+
+	return y.String()
+}
+
+// httpRouteYAML renders a Gateway API HTTPRoute attaching Host+Path to the
+// parent Gateway named by ClassName, forwarding to this chart's Service.
+func (s Service) httpRouteYAML() string {
+	ing := s.Ingress
+	fullname := s.includeFullname()
+	var y render.YAML
+
+	y.Field(0, KEY_API_VERSION, API_GATEWAY_V1)
+	y.Field(0, KEY_KIND, KIND_HTTPROUTE)
+	y.Line(0, KEY_METADATA+":")
+	y.Line(1, KEY_NAME+": "+fullname)
+	y.Line(1, KEY_LABELS+":")
+	y.Line(2, s.includeLabels(4))
+
+	y.Line(0, KEY_SPEC+":")
+	y.Line(1, KEY_PARENT_REFS+":")
+	y.Line(2, "- "+KEY_NAME+": "+ing.ClassName)
+	y.Line(1, KEY_HOSTNAMES+":")
+	y.Line(2, "- "+ing.Host)
+	y.Line(1, KEY_RULES+":")
+	y.Line(2, "- "+KEY_MATCHES+":")
+	y.Line(4, "- "+KEY_PATH+":")
+	y.Field(6, KEY_TYPE, GATEWAY_PATH_PREFIX)
+	y.Line(6, KEY_VALUE+": "+ing.path())
+	y.Line(3, KEY_BACKEND_REFS+":")
+	y.Line(4, "- "+KEY_NAME+": "+fullname)
+	y.Line(5, KEY_PORT+": "+strconv.Itoa(DEFAULT_SERVICE_PORT))
+
+	return y.String()
+}
+
+// metricsPort is the Service port name the ServiceMonitor scrapes (default the
+// chart's named "http" port).
+func (m ServiceMonitor) metricsPort() string {
+	if m.Port != "" {
+		return m.Port
+	}
+	return PORT_NAME_HTTP
+}
+
+// metricsPath is the ServiceMonitor scrape path, defaulting to
+// DEFAULT_METRICS_PATH.
+func (m ServiceMonitor) metricsPath() string {
+	if m.Path != "" {
+		return m.Path
+	}
+	return DEFAULT_METRICS_PATH
+}
+
+// scrapeInterval is the ServiceMonitor scrape interval, defaulting to
+// DEFAULT_SCRAPE_INTERVAL.
+func (m ServiceMonitor) scrapeInterval() string {
+	if m.Interval != "" {
+		return m.Interval
+	}
+	return DEFAULT_SCRAPE_INTERVAL
+}
+
+// serviceMonitorYAML renders templates/servicemonitor.yaml: a Prometheus
+// Operator ServiceMonitor that selects this chart's Service and scrapes the
+// named port. Only called when s.ServiceMonitor is non-nil.
+func (s Service) serviceMonitorYAML() string {
+	m := s.ServiceMonitor
+	var y render.YAML
+
+	y.Field(0, KEY_API_VERSION, API_MONITORING_V1)
+	y.Field(0, KEY_KIND, KIND_SERVICEMONITOR)
+	y.Line(0, KEY_METADATA+":")
+	y.Line(1, KEY_NAME+": "+s.includeFullname())
+	y.Line(1, KEY_LABELS+":")
+	y.Line(2, s.includeLabels(4))
+
+	y.Line(0, KEY_SPEC+":")
+	y.Line(1, KEY_SELECTOR+":")
+	y.Line(2, KEY_MATCH_LABELS+":")
+	y.Line(3, s.includeSelectorLabels(6))
+	y.Line(1, KEY_ENDPOINTS+":")
+	y.Line(2, "- "+KEY_PORT+": "+m.metricsPort())
+	y.Field(3, KEY_PATH, m.metricsPath())
+	y.Field(3, KEY_INTERVAL, m.scrapeInterval())
 
 	return y.String()
 }

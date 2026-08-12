@@ -1,0 +1,8 @@
+volumes:
+  - name: tmp
+    emptyDir: {}
+  - name: config
+    secret:
+      secretName: app-config
+  - name: cache
+    emptyDir: {}

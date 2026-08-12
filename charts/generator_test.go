@@ -66,7 +66,50 @@ func TestGenerateSnapshots(t *testing.T) {
 				NetworkPolicy:       &NetworkPolicy{AllowSameNamespace: true},
 				PodDisruptionBudget: &PodDisruptionBudget{},
 				Autoscale:           &Autoscale{MaxReplicas: 10, TargetMemoryUtilization: 75},
+				Ingress:             &Ingress{Host: "api.example.com", TLSSecret: "api-tls"},
+				ServiceMonitor:      &ServiceMonitor{},
 			},
+		},
+		{
+			// A fully configured container: command/args, env + envFrom, and
+			// custom volumes (Secret-backed and emptyDir) alongside the /tmp mount.
+			id:      "service_api_container.yaml",
+			version: "0.1.0",
+			gen: Service{
+				Name:        "api",
+				Description: "Demo API service",
+				Container: Container{
+					Command:    []string{"/bin/api"},
+					Args:       []string{"--port=8080", "--verbose"},
+					Env:        O{"LOG_LEVEL": "info"},
+					Secrets:    []string{"api-secrets"},
+					ConfigMaps: []string{"api-config"},
+					Volumes: []Volume{
+						{Name: "config", MountPath: "/etc/config", Secret: "app-config", ReadOnly: true},
+						{Name: "cache", MountPath: "/var/cache"},
+					},
+				},
+			},
+		},
+		{
+			id:      "service_api_statefulset.yaml",
+			version: "0.1.0",
+			gen:     Service{Name: "api", Description: "Demo API service", Kind: StatefulSet},
+		},
+		{
+			id:      "service_api_daemonset.yaml",
+			version: "0.1.0",
+			gen:     Service{Name: "api", Description: "Demo API service", Kind: DaemonSet},
+		},
+		{
+			id:      "service_api_job.yaml",
+			version: "0.1.0",
+			gen:     Service{Name: "api", Description: "Demo API service", Kind: Job},
+		},
+		{
+			id:      "service_api_cronjob.yaml",
+			version: "0.1.0",
+			gen:     Service{Name: "api", Description: "Demo API service", Kind: CronJob, Schedule: "*/5 * * * *"},
 		},
 	}
 

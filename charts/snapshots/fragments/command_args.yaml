@@ -1,0 +1,6 @@
+command:
+  - /bin/sh
+  - "-c"
+args:
+  - "--port=8080"
+  - "--verbose"

@@ -39,19 +39,14 @@ app.kubernetes.io/name: {{ include "api.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
-# file: templates/deployment.yaml
-apiVersion: apps/v1
-kind: Deployment
+# file: templates/job.yaml
+apiVersion: batch/v1
+kind: Job
 metadata:
   name: {{ include "api.fullname" . }}
   labels:
     {{- include "api.labels" . | nindent 4 }}
 spec:
-  strategy:
-    type: RollingUpdate
-  selector:
-    matchLabels:
-      {{- include "api.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
@@ -74,6 +69,7 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
+      restartPolicy: Never
       containers:
         - name: api
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
@@ -120,100 +116,6 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
 
-# file: templates/hpa.yaml
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: {{ include "api.fullname" . }}
-  labels:
-    {{- include "api.labels" . | nindent 4 }}
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: {{ include "api.fullname" . }}
-  minReplicas: 1
-  maxReplicas: 10
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 80
-    - type: Resource
-      resource:
-        name: memory
-        target:
-          type: Utilization
-          averageUtilization: 75
-
-# file: templates/ingress.yaml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: {{ include "api.fullname" . }}
-  labels:
-    {{- include "api.labels" . | nindent 4 }}
-spec:
-  ingressClassName: nginx
-  tls:
-    - hosts:
-        - api.example.com
-      secretName: api-tls
-  rules:
-    - host: api.example.com
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ include "api.fullname" . }}
-                port:
-                  number: 80
-
-# file: templates/networkpolicy.yaml
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: {{ include "api.fullname" . }}
-  labels:
-    {{- include "api.labels" . | nindent 4 }}
-spec:
-  podSelector:
-    matchLabels:
-      {{- include "api.selectorLabels" . | nindent 6 }}
-  policyTypes:
-    - Ingress
-    - Egress
-  ingress:
-    - from:
-        - podSelector: {}
-  egress:
-    - to:
-        - podSelector: {}
-    - to:
-        - namespaceSelector: {}
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-
-# file: templates/poddisruptionbudget.yaml
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: {{ include "api.fullname" . }}
-  labels:
-    {{- include "api.labels" . | nindent 4 }}
-spec:
-  minAvailable: 1
-  selector:
-    matchLabels:
-      {{- include "api.selectorLabels" . | nindent 6 }}
-
 # file: templates/service.yaml
 apiVersion: v1
 kind: Service
@@ -239,22 +141,6 @@ metadata:
   labels:
     {{- include "api.labels" . | nindent 4 }}
 automountServiceAccountToken: false
-
-# file: templates/servicemonitor.yaml
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: {{ include "api.fullname" . }}
-  labels:
-    {{- include "api.labels" . | nindent 4 }}
-spec:
-  selector:
-    matchLabels:
-      {{- include "api.selectorLabels" . | nindent 6 }}
-  endpoints:
-    - port: http
-      path: /metrics
-      interval: 30s
 
 # file: values.yaml
 # Default values for the api chart.
